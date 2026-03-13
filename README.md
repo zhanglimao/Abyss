@@ -256,6 +256,13 @@ docker ps
 CONTAINER ID   IMAGE        PORTS                                                                                NAMES
 xxxxxx         abyss:v0.1   0.0.0.0:80->80/tcp, 0.0.0.0:3000->3000/tcp, 0.0.0.0:8765->8765/tcp   abyss
 ```
+#### 配置大模型API
+配置路径：Abyss/llm/.api_key.json
+{
+    "base_url": "xxx",
+    "api_key": "xxx",
+    "model_type":"xxx"
+}
 
 4. **访问 Abyss**
 - Web UI: `http://localhost:3000`
