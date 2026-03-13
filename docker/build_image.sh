@@ -1,0 +1,1 @@
+docker build -t abyss:v0.1 -f Dockerfile ../

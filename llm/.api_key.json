@@ -1,0 +1,5 @@
+{
+    "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+    "api_key": "sk-sp-",
+    "model_type":"qwen3.5-plus"
+}

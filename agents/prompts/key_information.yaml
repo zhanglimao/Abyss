@@ -1,0 +1,267 @@
+# 渗透测试关键信息记录模板
+# 使用说明：在测试过程中将发现的信息填入对应字段，带[]的字段表示列表类型
+
+# ==================== 信息收集 ====================
+reconnaissance:
+  # 域名信息
+  domains:
+    - domain: ""                    # 主域名
+      subdomains: []                # 子域名列表
+      ips: []                       # 解析到的IP地址
+      notes: ""                     # 备注
+  
+  # IP地址信息
+  ip_addresses:
+    - ip: ""                        # IP地址
+      hostname: ""                  # 主机名
+      is_alive: false               # 是否存活 true/false
+      os: ""                        # 操作系统
+      mac: ""                       # MAC地址
+      notes: ""                     # 备注
+  
+  # WHOIS信息
+  whois_info:
+    - target: ""                    # 查询目标
+      registrar: ""                 # 注册商
+      emails: []                    # 关联邮箱
+      nameservers: []               # DNS服务器
+      created_date: ""              # 创建日期
+      expiry_date: ""               # 过期日期
+
+# ==================== 端口与服务 ====================
+services:
+  - ip: ""                          # 目标IP
+    hostname: ""                    # 主机名
+    port: 0                         # 端口号
+    protocol: ""                    # 协议 tcp/udp
+    state: ""                       # 状态 open/filtered/closed
+    service: ""                     # 服务名称
+    version: ""                     # 服务版本
+    banner: ""                      # 服务banner
+    cpe: ""                         # CPE编号
+    notes: ""                       # 备注
+
+# ==================== Web应用信息 ====================
+web_applications:
+  - url: ""                         # 完整URL
+    ip: ""                          # 解析IP
+    port: 0                         # 端口
+    https: false                    # 是否HTTPS
+    status_code: 0                  # HTTP状态码
+    server: ""                      # 服务器软件
+    title: ""                       # 页面标题
+    technologies: []                # 技术栈
+    frameworks: []                  # 开发框架
+    cms: ""                         # CMS系统
+    login_panel: false              # 是否有登录页面
+    directories: []                 # 发现的目录
+    files: []                       # 发现的敏感文件
+    parameters: []                  # URL参数
+    headers: {}                     # HTTP响应头
+    notes: ""                       # 备注
+
+# ==================== 漏洞信息 ====================
+vulnerabilities:
+  - id: ""                          # 漏洞编号
+    name: ""                        # 漏洞名称
+    severity: ""                    # 严重程度 critical/high/medium/low/info
+    type: ""                        # 漏洞类型
+    status: ""                      # 状态 new/confirmed/exploited/fixed
+    
+    affected:
+      target: ""                    # 受影响目标
+      url: ""                       # 受影响URL
+      parameter: ""                 # 受影响参数
+      component: ""                 # 受影响组件
+      version: ""                   # 受影响版本
+    
+    description: ""                 # 漏洞描述
+    impact: ""                      # 潜在影响
+    poc: ""                         # 概念验证
+    evidence: ""                    # 证据描述
+    
+    cve: ""                         # CVE编号
+    cwe: ""                         # CWE编号
+    cvss: 0.0                       # CVSS评分
+    
+    remediation: ""                 # 修复建议
+    references: []                  # 参考链接
+    discovered_date: ""             # 发现日期
+    discovered_by: ""               # 发现人
+    notes: ""                       # 备注
+
+# ==================== 凭证信息 ====================
+credentials:
+  - id: ""                          # 凭证编号
+    type: ""                        # 类型 system/web/database
+    status: ""                      # 状态 valid/invalid/unknown
+    
+    target:
+      service: ""                   # 服务名称
+      host: ""                      # 目标主机
+      port: 0                       # 目标端口
+      domain: ""                    # Windows域
+    
+    auth:
+      username: ""                  # 用户名
+      password: ""                  # 密码
+      hash: ""                      # 哈希值
+      hash_type: ""                 # 哈希类型
+      private_key: ""               # 私钥
+      certificate: ""               # 证书
+    
+    source: ""                      # 来源
+    discovered_date: ""             # 发现日期
+    notes: ""                       # 备注
+
+# ==================== 漏洞利用 ====================
+exploitation:
+  sessions:
+    - id: ""                        # 会话ID
+      vuln_id: ""                   # 关联漏洞ID
+      target: ""                    # 目标
+      
+      exploit_used:
+        name: ""                    # 漏洞名称
+        tool: ""                    # 使用工具
+        command: ""                 # 执行命令
+        payload: ""                 # Payload
+      
+      access:
+        shell_type: ""              # Shell类型
+        ip: ""                      # 会话IP
+        port: 0                     # 会话端口
+        user: ""                    # 当前用户
+        privileges: ""              # 当前权限
+      
+      timestamp: ""                 # 获取时间
+      notes: ""                     # 备注
+
+# ==================== 权限提升 ====================
+privilege_escalation:
+  - session_id: ""                  # 会话ID
+    host: ""                        # 主机
+    initial_user: ""                # 初始用户
+    initial_privileges: ""          # 初始权限
+    target_user: ""                 # 目标用户
+    
+    method: ""                      # 提权方法
+    exploit_name: ""                # 漏洞名称
+    exploit_file: ""                # 利用文件
+    command: ""                     # 执行命令
+    
+    success: false                  # 是否成功
+    final_user: ""                  # 最终用户
+    final_privileges: ""            # 最终权限
+    
+    timestamp: ""                   # 提权时间
+    notes: ""                       # 备注
+
+# ==================== 横向移动 ====================
+lateral_movement:
+  pivoting:
+    - session_id: ""                # 源会话ID
+      pivot_type: ""                # 跳板类型
+      local_port: 0                 # 本地端口
+      remote_host: ""               # 远程主机
+      remote_port: 0                # 远程端口
+      command: ""                   # 建立命令
+      accessible_networks: []       # 可访问网段
+      notes: ""                     # 备注
+  
+  movement:
+    - session_id: ""                # 源会话ID
+      method: ""                    # 移动方法
+      credentials_id: ""            # 使用凭证ID
+      source_host: ""               # 源主机
+      target_host: ""               # 目标主机
+      target_service: ""            # 目标服务
+      success: false                # 是否成功
+      access_gained: ""             # 获取的访问权限
+      timestamp: ""                 # 移动时间
+      notes: ""                     # 备注
+
+# ==================== 敏感数据 ====================
+sensitive_data:
+  - id: ""                          # 数据编号
+    type: ""                        # 类型 config/backup/database/source
+    session_id: ""                  # 关联会话ID
+    
+    location: ""                    # 发现位置
+    content_summary: ""             # 内容摘要
+    significance: ""                # 重要性
+    
+    files: []                       # 相关文件
+    extracted_data: []              # 提取的数据
+    
+    discovered_date: ""             # 发现日期
+    notes: ""                       # 备注
+
+# ==================== 密码破解 ====================
+password_cracking:
+  - session_id: ""                  # 关联会话ID
+    target_hashes: []               # 目标哈希
+    hash_type: ""                   # 哈希类型
+    
+    attempts:
+      - tool: ""                    # 使用工具
+        command: ""                 # 执行命令
+        wordlist: ""                # 使用的字典
+        rules: []                   # 使用的规则
+        time_spent: ""              # 耗时
+        cracked_count: 0            # 破解数量
+        cracked:                     # 破解结果
+          - hash: ""                # 哈希值
+            password: ""            # 明文密码
+            user: ""                # 关联用户
+    
+    timestamp: ""                   # 破解时间
+    notes: ""                       # 备注
+
+# ==================== 工具命令记录 ====================
+tool_commands:
+  - phase: ""                       # 测试阶段
+    tool: ""                        # 工具名称
+    version: ""                     # 工具版本
+    command: ""                     # 完整命令
+    output_file: ""                 # 输出文件
+    parameters: {}                  # 关键参数
+    timestamp: ""                   # 执行时间
+    notes: ""                       # 备注
+
+# ==================== 网络拓扑 ====================
+network_topology:
+  segments:
+    - name: ""                      # 网段名称
+      network: ""                   # 网段地址
+      hosts:                        # 主机列表
+        - ip: ""                    # IP地址
+          hostname: ""              # 主机名
+          role: ""                  # 角色
+          services: []              # 运行的服务
+          compromised: false        # 是否被攻陷
+          session_id: ""            # 关联会话ID
+  
+  connections:
+    - from: ""                      # 源主机
+      to: ""                        # 目标主机
+      protocol: ""                  # 协议
+      port: 0                       # 端口
+      discovered_by: ""             # 发现方式
+
+# ==================== 密码字典 ====================
+wordlists:
+  usernames: []                     # 收集的用户名
+  passwords: []                     # 收集的密码
+  common_strings: []                # 公司相关字符串
+  generated_files: []               # 生成的字典文件
+
+# ==================== 修复建议 ====================
+recommendations:
+  immediate: []                      # 立即修复
+  short_term: []                     # 短期改进
+  long_term: []                      # 长期规划
+  additional_tests: []               # 建议的额外测试
+
+# ==================== 通用备注 ====================
+notes: ""                            # 自由文本备注
