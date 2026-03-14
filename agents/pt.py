@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 sys.path.append("..")
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
@@ -78,23 +79,32 @@ graph TD
 
 checkpointer = MemorySaver()
 
-skill_path = "/skills/"
-fs_root_dir = "/Users/zhang.lm/work/pt_test/"
+# Get the base directory relative to this file
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-pt_test = create_deep_agent(
-    name = "PenetrationTestingAgent",
-    model = model,
-    tools=[GetCurrentSystemTime],
-    backend=FilesystemBackend(root_dir=fs_root_dir, virtual_mode=True),
-    # store = InMemoryStore(),
-    skills=[skill_path],
-    system_prompt=sys_prompt,
-    subagents=[exploiter_agents,analyzer_agents,report_agents],
-)
+skill_path = "/skills/"
+
+_stop_pt = False
 
 def start_pt(query:str):
+    global _stop_pt
+    _stop_pt = False  # 重置停止标志
+    
+    pt_test = create_deep_agent(
+        name = "PenetrationTestingAgent",
+        model = model,
+        tools=[GetCurrentSystemTime],
+        backend=FilesystemBackend(root_dir=BASE_DIR, virtual_mode=True),
+        # store = InMemoryStore(),
+        skills=[skill_path],
+        system_prompt=sys_prompt,
+        subagents=[exploiter_agents,analyzer_agents,report_agents],
+    )
     query_msg = {"messages": [HumanMessage(query)]}
+
     for namespace, chunk in pt_test.stream(query_msg,stream_mode="updates",subgraphs=True):
+        if _stop_pt:
+            break
         # Main agent updates (empty namespace)
         subagent=None
         if namespace:
@@ -125,6 +135,16 @@ def start_pt(query:str):
 
                     yield conversation
 
+def stop_pt():
+    """停止当前运行的渗透测试任务"""
+    global _stop_pt
+    _stop_pt = True
+    key_information_path = os.path.join(BASE_DIR, "key_information")
+    print("key_information_path:",key_information_path)
+    shutil.rmtree(key_information_path, ignore_errors=True)
+    os.makedirs(key_information_path, exist_ok=True)
+    
+    
                             
 if __name__ == "__main__":
     for item in start_pt("获取指定地址的FLAG，FLAG格式固定为：CTF{{xxxxxx}}、FLAG{{xxxxx}} 或者ctfhub{{xxxxxx}}，\

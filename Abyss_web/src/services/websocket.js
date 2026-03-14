@@ -299,6 +299,18 @@ class WebSocketService {
   }
 
   /**
+   * 发送任务继续/恢复消息（用于页面刷新后恢复任务）
+   * @param {string} taskId - 任务 ID
+   */
+  sendTaskContinue(taskId) {
+    return this.send({
+      type: 'task_continue',
+      task_id: taskId,  // 带上任务 ID（下划线命名）
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
    * 设置 WebSocket 服务器地址
    * @param {string} baseUrl - WebSocket 服务器地址，例如 'ws://0.0.0.0:8765'
    */

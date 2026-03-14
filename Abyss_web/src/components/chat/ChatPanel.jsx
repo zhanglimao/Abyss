@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { MessageSquare, Globe, Globe2, ArrowDown, Trash2 } from 'lucide-react';
+import { MessageSquare, Globe, Globe2, ArrowDown } from 'lucide-react';
 import clsx from 'clsx';
 import { useChatStore, useTaskStore, useInfoStore } from '../../store/store.js';
 import webSocketService from '../../services/websocket.js';
 import { parseMessageStream, convertToFrontendMessage, pairToolCalls, groupBySubAgent } from '../../utils/messageParser.js';
 import { MessageBubble, SubAgentGroup } from './MessageBubble.jsx';
 import ChatInput from './ChatInput.jsx';
+import LoadingIndicator from './LoadingIndicator.jsx';
 import { MessageType } from './MessageTypes.js';
 
 /**
@@ -15,6 +16,7 @@ import { MessageType } from './MessageTypes.js';
 const ChatPanel = () => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const globalTaskRef = useRef(null);
 
   // 滚动状态
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -23,16 +25,52 @@ const ChatPanel = () => {
   // WebSocket 连接状态
   const [wsConnectionStatus, setWsConnectionStatus] = useState('disconnected');
 
+  // 加载状态：'idle' | 'loading' | 'cancelled'
+  const [loadingStatus, setLoadingStatus] = useState('idle');
+
   const { messages, addMessage, addMessages, clearMessages, setTyping, setConnectionStatus, currentTaskId, setCurrentTaskId, taskMessages } =
     useChatStore();
   const { globalTask } = useTaskStore();
   const { refreshAll } = useInfoStore();
 
+  // 更新 ref
+  useEffect(() => {
+    globalTaskRef.current = globalTask;
+    console.log('🔄 [ChatPanel] globalTaskRef 更新:', globalTask?.id);
+  }, [globalTask]);
+
   // 获取当前会话 ID（使用全局任务 ID 或 WebSocket 的 currentTaskId）
   const currentSessionId = globalTask?.id || webSocketService.currentTaskId || currentTaskId;
 
   // 获取当前会话的消息（使用普通变量，不使用 Hook）
+  // 注意：taskMessages 是一个对象，key 是 taskId，value 是消息数组
   const currentTaskMessages = currentSessionId ? (taskMessages[currentSessionId] || []) : [];
+
+  // 调试：监听消息数量变化
+  useEffect(() => {
+    console.log('📊 [ChatPanel] 当前会话 ID:', currentSessionId);
+    console.log('📊 [ChatPanel] 当前消息数量:', currentTaskMessages.length);
+    if (currentTaskMessages.length > 0) {
+      console.log('   第一条消息:', currentTaskMessages[0]);
+    }
+  }, [currentSessionId, currentTaskMessages.length]);
+
+  // 使用 ref 存储 currentTaskId 和 store 方法，避免依赖变化
+  const currentTaskIdRef = useRef(currentTaskId);
+  const addMessageRef = useRef(addMessage);
+  const refreshAllRef = useRef(refreshAll);
+  
+  useEffect(() => {
+    currentTaskIdRef.current = currentTaskId;
+  }, [currentTaskId]);
+  
+  useEffect(() => {
+    addMessageRef.current = addMessage;
+  }, [addMessage]);
+  
+  useEffect(() => {
+    refreshAllRef.current = refreshAll;
+  }, [refreshAll]);
 
   // 防抖刷新关键信息（避免频繁请求）
   const refreshTimerRef = useRef(null);
@@ -42,14 +80,31 @@ const ChatPanel = () => {
     }
     refreshTimerRef.current = setTimeout(() => {
       console.log('🔄 WebSocket 消息触发关键信息刷新:', taskId);
-      refreshAll(taskId);
+      refreshAllRef.current(taskId);
     }, 1000); // 1 秒防抖
-  }, [refreshAll]);
+  }, []); // 空依赖，使用 ref
 
-  // 处理 WebSocket 消息接收
+  // 处理 WebSocket 消息接收（使用 ref 避免依赖变化）
   const handleMessageReceived = useCallback((message) => {
+    console.log('📡 [ChatPanel] 收到 WebSocket 消息:', message);
+    
     // 过滤心跳消息（ping/pong）
     if (message.type === 'ping' || message.type === 'pong') {
+      return;
+    }
+
+    // 特殊处理：检查是否是任务完成消息（status: "complate"）
+    // 这种消息可能没有 type 字段，需要优先处理
+    if (message.status === 'complate') {
+      console.log('✅ 任务完成，清除 loading 状态');
+      setLoadingStatus('idle');
+      return;  // 完成消息不显示在聊天窗口中
+    }
+
+    // 过滤未知类型的消息（只处理已知类型）
+    const knownTypes = ['human', 'ai', 'tool', 'system'];
+    if (!knownTypes.includes(message.type)) {
+      console.log('⚠️ 未知消息类型，已忽略:', message.type);
       return;
     }
 
@@ -57,7 +112,8 @@ const ChatPanel = () => {
     const messageTaskId = message.task_id || message.taskId;
 
     // 始终使用全局任务 ID 作为目标 ID（如果没有全局任务，则使用消息中的 task_id）
-    const targetTaskId = globalTask?.id || messageTaskId || currentSessionId;
+    const currentGlobalTask = globalTaskRef.current;
+    const targetTaskId = currentGlobalTask?.id || messageTaskId || currentTaskIdRef.current;
 
     if (!targetTaskId) {
       console.log('⚠️ 消息缺少 task_id，已忽略');
@@ -80,16 +136,26 @@ const ChatPanel = () => {
       return;
     }
 
-    // 添加消息到全局任务
-    addMessage({
+    console.log('✅ 消息转换成功:', frontendMessage);
+
+    // 添加消息到全局任务（使用 ref）
+    addMessageRef.current({
       ...frontendMessage,
       task_id: targetTaskId,
       timestamp: frontendMessage.timestamp || new Date().toISOString(),
     }, targetTaskId);
 
+    // 状态流转逻辑：
+    // 1. 收到系统停止确认 → 任务已停止，清除 loading
+    // 2. 其他情况 → 保持 loading 状态，显示"处理中"
+    if (message.type === 'system' && (message.content?.includes('已停止') || message.content?.includes('已取消'))) {
+      console.log('✅ 任务已停止，清除 loading 状态');
+      setLoadingStatus('idle');
+    }
+
     // 触发关键信息查询（使用防抖）
     debouncedRefresh(targetTaskId);
-  }, [globalTask, addMessage, debouncedRefresh]);
+  }, []); // 空依赖，完全使用 ref
 
   // 监听全局 WebSocket 连接状态
   useEffect(() => {
@@ -109,14 +175,20 @@ const ChatPanel = () => {
     return unsubscribe;
   }, [setConnectionStatus]);
 
-  // 注册 WebSocket 消息监听器
+  // 注册 WebSocket 消息监听器（只注册一次）
+  // 注意：handleMessageReceived 使用空依赖，内部通过 ref 访问最新值
   useEffect(() => {
+    console.log('📡 [ChatPanel] 注册 WebSocket 消息监听器');
     const unsubscribe = webSocketService.onMessage((message) => {
+      console.log('📬 [ChatPanel] 监听器收到消息:', message.type);
       handleMessageReceived(message);
     });
 
-    return unsubscribe;
-  }, [handleMessageReceived, currentSessionId]);
+    return () => {
+      console.log('📡 [ChatPanel] 注销 WebSocket 消息监听器');
+      unsubscribe();
+    };
+  }, []); // 空依赖，只注册一次
 
   // 确保 currentSessionId 变化时更新 currentTaskId
   useEffect(() => {
@@ -180,7 +252,7 @@ const ChatPanel = () => {
     scrollToBottom();
   }, []); // 只在初始挂载时滚动
 
-  // 初始化：设置当前任务 ID，使用全局 WebSocket 连接
+  // 初始化：设置当前任务 ID，使用全局 WebSocket 连接，并自动设置 loading 状态
   useEffect(() => {
     if (globalTask?.id) {
       console.log('📋 任务切换，使用全局 WebSocket 连接');
@@ -191,6 +263,9 @@ const ChatPanel = () => {
 
       // 只切换任务 ID，不重新连接 WebSocket
       webSocketService.switchTask(globalTask.id);
+
+      // 进入任务后自动设置 loading 状态（任务执行中）
+      setLoadingStatus('loading');
     }
 
     return () => {
@@ -204,14 +279,36 @@ const ChatPanel = () => {
 
     console.log('📤 发送消息，任务 ID:', targetTaskId);
 
+    // 设置加载状态
+    setLoadingStatus('loading');
+
     // 通过 WebSocket 发送（后端会返回 human 消息，由 handleMessageReceived 处理）
     webSocketService.sendUserMessage(content, targetTaskId);
   };
 
-  const handleClearChat = () => {
-    if (confirm('确定要清空聊天记录吗？')) {
-      clearMessages();
-    }
+  // 处理任务停止
+  const handleTaskStop = () => {
+    const targetTaskId = currentSessionId || globalTask?.id || 'global-session';
+
+    console.log('⏹️ 停止任务，任务 ID:', targetTaskId);
+
+    // 设置取消状态
+    setLoadingStatus('cancelled');
+
+    // 通过 WebSocket 发送任务停止消息
+    webSocketService.send({
+      type: 'task_stop',
+      task_id: targetTaskId,
+    });
+
+    // 可选：显示确认提示
+    console.log('✅ 已发送任务停止请求');
+  };
+
+  // 处理加载提示的取消
+  const handleLoadingCancel = () => {
+    setLoadingStatus('cancelled');
+    handleTaskStop();
   };
 
   const getMessageTypeLabel = (type) => {
@@ -291,39 +388,6 @@ const ChatPanel = () => {
 
   return (
     <div className="flex flex-col h-full bg-light-bg relative">
-      {/* 头部 */}
-      <div className="flex items-center justify-between p-5 border-b border-light-border bg-white/80 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-500 to-accent-600 flex items-center justify-center shadow-glow">
-            <MessageSquare size={18} className="text-white" />
-          </div>
-          <div>
-            <h2 className="font-semibold text-light-text">对话</h2>
-            <div className="flex items-center gap-2 text-xs">
-              <div
-                className={clsx(
-                  'w-2 h-2 rounded-full',
-                  isConnected ? 'bg-emerald-500' : 'bg-red-500'
-                )}
-              />
-              <span className={clsx(isConnected ? 'text-emerald-600' : 'text-red-500', 'font-medium')}>
-                {isConnected ? '已连接' : '未连接'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleClearChat}
-            className="p-2 rounded-xl text-light-textMuted hover:text-red-600 hover:bg-red-50 transition-all"
-            title="清空聊天"
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
-      </div>
-
       {/* 消息列表 */}
       <div
         ref={messagesContainerRef}
@@ -362,8 +426,8 @@ const ChatPanel = () => {
             onClick={scrollToBottom}
             className={clsx(
               'flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg border transition-all duration-300',
-              hasNewMessage 
-                ? 'bg-primary-500 text-white border-primary-600 animate-bounce' 
+              hasNewMessage
+                ? 'bg-primary-500 text-white border-primary-600 animate-bounce'
                 : 'bg-white text-light-text border-light-border hover:bg-primary-50'
             )}
           >
@@ -378,9 +442,16 @@ const ChatPanel = () => {
         </div>
       )}
 
+      {/* 加载提示 */}
+      <LoadingIndicator
+        status={loadingStatus}
+        onCancel={handleLoadingCancel}
+      />
+
       {/* 输入框 */}
       <ChatInput
         onSend={handleSendMessage}
+        onTaskStop={handleTaskStop}
         disabled={!isConnected}
         placeholder={isConnected ? '输入消息... (Shift+Enter 换行)' : 'WebSocket 未连接，请在系统设置中配置'}
       />

@@ -33,74 +33,107 @@ const Layout = () => {
     setWsConnectionStatus(initialStatus);
 
     // 页面加载时自动尝试连接（只要有配置就连接）
-    const savedWsUrl = localStorage.getItem('wsUrl');
-    const savedApiUrl = localStorage.getItem('apiUrl');
-    
-    console.log('🔍 页面加载，检查配置...');
-    console.log('   wsUrl:', savedWsUrl);
-    console.log('   apiUrl:', savedApiUrl);
+    const currentWsUrl = localStorage.getItem('wsUrl');
+    const currentApiUrl = localStorage.getItem('apiUrl');
+    // 检测是否是页面刷新（二级页面刷新场景）
+    const isPageRefresh = sessionStorage.getItem('taskStarted') === 'true';
+    const savedTaskId = sessionStorage.getItem('currentTaskId');
 
-    // 测试 RESTful API 连接
-    const testApiConnection = async (url) => {
-      console.log('🌐 测试 RESTful API 连接:', url);
-      try {
-        const endpoints = ['/api', '/config', '/tools', '/'];
-        for (const endpoint of endpoints) {
-          try {
-            const fullUrl = `${url}${endpoint}`;
-            console.log('  尝试端点:', fullUrl);
-            const response = await fetch(fullUrl, {
-              method: 'GET',
-              headers: { 'Content-Type': 'application/json' },
-            });
-            console.log('  响应状态码:', response.status);
-            if (response.ok || response.status === 404) {
-              console.log('✅ RESTful API 连接成功 (端点：' + endpoint + ')');
-              return true;
-            }
-          } catch (endpointError) {
-            console.log('  端点', endpoint, '请求失败:', endpointError.message);
-            continue;
-          }
+    console.log('🔍 Layout 页面加载，检查配置...');
+    console.log('   wsUrl:', currentWsUrl);
+    console.log('   apiUrl:', currentApiUrl);
+    console.log('   isPageRefresh:', isPageRefresh);
+    console.log('   savedTaskId:', savedTaskId);
+
+    if (currentWsUrl && currentApiUrl) {
+      console.log('🔌 Layout 检测到已保存的配置，尝试自动连接...');
+      console.log('   WebSocket 地址:', currentWsUrl);
+      console.log('   API 地址:', currentApiUrl || '未设置');
+      console.log('   是否页面刷新:', isPageRefresh);
+      console.log('   保存的任务 ID:', savedTaskId || '无');
+
+      // 确定使用的任务 ID
+      // 页面刷新时使用 sessionStorage 中的任务 ID，否则使用新的全局会话 ID
+      const targetTaskId = (isPageRefresh && savedTaskId) ? savedTaskId : 'global-session-' + Date.now();
+      console.log('🚀 Layout 使用任务 ID 连接 WebSocket:', targetTaskId);
+
+      // 测试 API 连接
+      testApiConnection(currentApiUrl).then(apiConnected => {
+        if (apiConnected) {
+          console.log('✅ RESTful API 连接成功');
+        } else {
+          console.warn('⚠️ RESTful API 连接失败');
         }
-        console.warn('⚠️ RESTful API 所有端点都失败');
-        return false;
-      } catch (error) {
-        console.error('❌ RESTful API 连接失败:', error.message);
-        return false;
-      }
-    };
+      }).catch(err => {
+        console.error('❌ RESTful API 测试失败:', err);
+      });
 
-    // 自动建立 RESTful API 和 WebSocket 连接
-    if (savedApiUrl) {
-      console.log('🚀 自动测试 RESTful API:', savedApiUrl);
-      testApiConnection(savedApiUrl)
-        .then(connected => {
-          if (connected) {
-            console.log('✅ RESTful API 已连接');
-          } else {
-            console.warn('⚠️ RESTful API 连接失败，服务器可能未启动');
-          }
-        })
-        .catch(error => {
-          console.error('❌ RESTful API 测试失败:', error);
-        });
-    }
-
-    if (savedWsUrl) {
-      const globalTaskId = 'global-session-' + Date.now();
-      console.log('🚀 自动连接 WebSocket:', savedWsUrl, 'taskId:', globalTaskId);
-      webSocketService.connect(globalTaskId, savedWsUrl)
+      // 连接 WebSocket
+      webSocketService.connect(targetTaskId, currentWsUrl)
         .then(() => {
-          console.log('✅ WebSocket 自动连接成功');
+          console.log('✅ Layout WebSocket 自动连接成功');
+          setWsConnectionStatus('connected');
+
+          // 如果是页面刷新场景，先发送 task_stop 停止之前的任务，再发送 task_continue 恢复任务
+          if (isPageRefresh && savedTaskId) {
+            console.log('🔄 Layout 页面刷新检测到，先发送 task_stop 停止之前的任务');
+            webSocketService.send({
+              type: 'task_stop',
+              task_id: savedTaskId,
+              timestamp: new Date().toISOString(),
+            });
+            
+            // 等待一小段时间后再发送 task_continue
+            setTimeout(() => {
+              console.log('📤 发送 task_continue 恢复任务');
+              webSocketService.sendTaskContinue(savedTaskId);
+            }, 100);
+          }
         })
         .catch((error) => {
-          console.error('❌ WebSocket 自动连接失败:', error);
+          console.error('❌ Layout WebSocket 自动连接失败:', error);
+          setWsConnectionStatus('error');
         });
+    } else {
+      console.log('ℹ️ Layout 未检测到已保存的配置，请在系统设置中配置');
     }
 
-    return unsubscribe;
+    // 清理函数
+    return () => {
+      unsubscribe();
+    };
   }, []);
+
+  // 测试 RESTful API 连接
+  const testApiConnection = async (url) => {
+    console.log('🌐 测试 RESTful API 连接:', url);
+    try {
+      const endpoints = ['/api', '/config', '/tools', '/'];
+      for (const endpoint of endpoints) {
+        try {
+          const fullUrl = `${url}${endpoint}`;
+          console.log('  尝试端点:', fullUrl);
+          const response = await fetch(fullUrl, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          console.log('  响应状态码:', response.status);
+          if (response.ok || response.status === 404) {
+            console.log('✅ RESTful API 连接成功 (端点：' + endpoint + ')');
+            return true;
+          }
+        } catch (endpointError) {
+          console.log('  端点', endpoint, '请求失败:', endpointError.message);
+          continue;
+        }
+      }
+      console.warn('⚠️ RESTful API 所有端点都失败');
+      return false;
+    } catch (error) {
+      console.error('❌ RESTful API 连接失败:', error.message);
+      return false;
+    }
+  };
 
   // 处理起始对话框确认
   const handleStartConfirm = async () => {
@@ -116,10 +149,26 @@ const Layout = () => {
       await webSocketService.connect(task.id, wsUrl);
     }
 
+    // 保存任务状态到 sessionStorage，用于刷新检测
+    sessionStorage.setItem('taskStarted', 'true');
+    sessionStorage.setItem('currentTaskId', task.id);
+    console.log('💾 已保存任务状态到 sessionStorage，任务 ID:', task.id);
+
     // 关闭对话框，显示主界面
     setShowStartDialog(false);
     setTaskStarted(true);
   };
+
+  // 清理任务状态（用户主动退出时调用）
+  const clearTaskState = () => {
+    sessionStorage.removeItem('taskStarted');
+    sessionStorage.removeItem('currentTaskId');
+    console.log('🗑️ 已清理任务状态');
+  };
+
+  // 注意：不在 beforeunload 时清理 sessionStorage
+  // 这样页面刷新时可以自动恢复任务
+  // 只在用户主动退出任务时调用 clearTaskState() 清理
 
   return (
     <div className="flex h-screen bg-light-bg overflow-hidden relative">
@@ -275,38 +324,30 @@ const SettingsModal = ({ onClose }) => {
   const [wsConnectionStatus, setWsConnectionStatus] = useState('disconnected');
   const [lastPingTime, setLastPingTime] = useState(null);
 
-  // 定时检测连接状态
-  useEffect(() => {
-    if (apiConnectionStatus === 'connected' && wsConnectionStatus === 'connected') {
-      // 每 5 秒检测一次连接状态
-      const checkInterval = setInterval(() => {
-        setLastPingTime(new Date().toISOString());
-        webSocketService.sendPing();
-        
-        // 检测 API 连接
-        testApiConnection(apiUrl);
-      }, 5000);
-
-      return () => clearInterval(checkInterval);
-    }
-  }, [apiConnectionStatus, wsConnectionStatus, apiUrl]);
-
-  // 监听 WebSocket 连接状态变化
+  // 监听 WebSocket 连接状态变化（SettingsModal 内部）
   useEffect(() => {
     const unsubscribe = webSocketService.onStatusChange((status) => {
-      console.log('📡 Layout 收到 WebSocket 状态变化:', status);
+      console.log('📡 SettingsModal 收到 WebSocket 状态变化:', status);
       setWsConnectionStatus(status);
-      
+
       // 如果连接异常断开，自动重连
       if (status === 'disconnected' || status === 'error') {
-        const savedWsUrl = localStorage.getItem('wsUrl');
-        if (savedWsUrl && status === 'disconnected') {
+        const currentWsUrl = localStorage.getItem('wsUrl');
+        if (currentWsUrl && status === 'disconnected') {
           console.log('🔄 WebSocket 异常断开，准备自动重连...');
           setTimeout(() => {
-            const globalTaskId = 'global-session-' + Date.now();
-            webSocketService.connect(globalTaskId, savedWsUrl)
+            // 优先使用 sessionStorage 中的任务 ID（页面刷新场景）
+            const savedTaskId = sessionStorage.getItem('currentTaskId');
+            const globalTaskId = savedTaskId || 'global-session-' + Date.now();
+            console.log('🔌 自动重连 WebSocket，任务 ID:', globalTaskId);
+            webSocketService.connect(globalTaskId, currentWsUrl)
               .then(() => {
                 console.log('✅ WebSocket 自动重连成功');
+                // 如果是页面刷新场景，发送任务恢复消息
+                if (savedTaskId) {
+                  console.log('📤 发送任务恢复消息');
+                  webSocketService.sendTaskContinue(savedTaskId);
+                }
               })
               .catch((error) => {
                 console.error('❌ WebSocket 自动重连失败:', error);
@@ -316,50 +357,17 @@ const SettingsModal = ({ onClose }) => {
       }
     });
 
-    // 初始化 WebSocket 状态
+    // 初始化 WebSocket 状态（从全局服务获取）
     const initialWsStatus = webSocketService.getConnectionStatus();
-    console.log('📡 Layout 初始化 WebSocket 状态:', initialWsStatus);
+    console.log('📡 SettingsModal 初始化 WebSocket 状态:', initialWsStatus);
     setWsConnectionStatus(initialWsStatus);
 
-    // 页面加载时自动恢复 WebSocket 连接
-    const savedWsUrl = localStorage.getItem('wsUrl');
-    const savedApiUrl = localStorage.getItem('apiUrl');
+    // 从 localStorage 加载配置（用于显示）
+    const currentWsUrl = localStorage.getItem('wsUrl');
+    const currentApiUrl = localStorage.getItem('apiUrl');
 
-    console.log('🔍 检查 localStorage 配置...');
-    console.log('   wsUrl:', savedWsUrl);
-    console.log('   apiUrl:', savedApiUrl);
-
-    if (savedWsUrl && savedApiUrl) {
-      console.log('🔌 检测到已保存的配置，尝试自动连接...');
-      console.log('   WebSocket 地址:', savedWsUrl);
-      console.log('   API 地址:', savedApiUrl || '未设置');
-
-      setWsUrl(savedWsUrl);
-      if (savedApiUrl) setApiUrl(savedApiUrl);
-
-      // 自动建立连接
-      const globalTaskId = 'global-session-' + Date.now();
-      console.log('🚀 开始连接 WebSocket...');
-      
-      // 测试 API 连接
-      testApiConnection(savedApiUrl).then(apiConnected => {
-        if (apiConnected) {
-          setApiConnectionStatus('connected');
-        }
-      });
-      
-      webSocketService.connect(globalTaskId, savedWsUrl)
-        .then(() => {
-          console.log('✅ 自动连接成功');
-          setWsConnectionStatus('connected');
-        })
-        .catch((error) => {
-          console.error('❌ 自动连接失败:', error);
-          setWsConnectionStatus('error');
-        });
-    } else {
-      console.log('ℹ️ 未检测到已保存的配置，请在系统设置中配置');
-    }
+    if (currentWsUrl) setWsUrl(currentWsUrl);
+    if (currentApiUrl) setApiUrl(currentApiUrl);
 
     // 监听页面可见性变化
     const handleVisibilityChange = () => {
@@ -368,12 +376,18 @@ const SettingsModal = ({ onClose }) => {
         console.log('👁️ 页面可见，当前 WebSocket 状态:', currentStatus);
 
         // 如果连接已断开或关闭，尝试重连
-        if ((currentStatus === 'disconnected' || currentStatus === 'closed' || currentStatus === 'error') && savedWsUrl) {
+        if ((currentStatus === 'disconnected' || currentStatus === 'closed' || currentStatus === 'error') && currentWsUrl) {
           console.log('🔄 WebSocket 连接已断开，尝试重连...');
-          const globalTaskId = 'global-session-' + Date.now();
-          webSocketService.connect(globalTaskId, savedWsUrl)
+          const currentTaskId = sessionStorage.getItem('currentTaskId');
+          const globalTaskId = currentTaskId || 'global-session-' + Date.now();
+          webSocketService.connect(globalTaskId, currentWsUrl)
             .then(() => {
               console.log('✅ WebSocket 重连成功');
+              // 如果是页面刷新场景，发送任务恢复消息
+              if (currentTaskId) {
+                console.log('📤 发送任务恢复消息');
+                webSocketService.sendTaskContinue(currentTaskId);
+              }
             })
             .catch((error) => {
               console.error('❌ WebSocket 重连失败:', error);

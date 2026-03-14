@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, Square } from 'lucide-react';
 import clsx from 'clsx';
 
 /**
  * 聊天输入框组件
  */
-const ChatInput = ({ onSend, disabled, isRunning, placeholder = '输入消息... (Shift+Enter 换行)' }) => {
+const ChatInput = ({ onSend, onTaskStop, disabled, isRunning, placeholder = '输入消息... (Shift+Enter 换行)' }) => {
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const textareaRef = useRef(null);
@@ -21,8 +21,14 @@ const ChatInput = ({ onSend, disabled, isRunning, placeholder = '输入消息...
   const handleSubmit = (e) => {
     e.preventDefault();
     if (input.trim() && !disabled) {
-      onSend(input.trim());
+      // 先清空输入框，再发送消息
       setInput('');
+      // 重置高度
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      // 发送消息
+      onSend(input.trim());
     }
   };
 
@@ -58,6 +64,22 @@ const ChatInput = ({ onSend, disabled, isRunning, placeholder = '输入消息...
             rows={1}
             className="flex-1 bg-transparent text-light-text placeholder-light-textMuted resize-none focus:outline-none py-2 max-h-48 disabled:opacity-50"
           />
+
+          {/* 任务取消按钮 */}
+          <button
+            type="button"
+            onClick={onTaskStop}
+            disabled={disabled}
+            className={clsx(
+              'p-2.5 rounded-xl transition-all',
+              !disabled
+                ? 'bg-red-500 hover:bg-red-600 text-white shadow-md hover:shadow-lg'
+                : 'bg-light-border text-light-textMuted cursor-not-allowed'
+            )}
+            title="停止任务"
+          >
+            <Square size={18} />
+          </button>
 
           {/* 发送按钮 */}
           <button
