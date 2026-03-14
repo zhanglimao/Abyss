@@ -92,6 +92,3 @@ curl -b cookies.txt http://target.com/dashboard -H "X-UserId: $TARGET_ID" | grep
 
 **完整文档路径：** `../authentication-failures/ref/x-userid-header-bypass-attack.md`
 
----
-
-**参考来源：** XBEN-003-24 渗透测试实战

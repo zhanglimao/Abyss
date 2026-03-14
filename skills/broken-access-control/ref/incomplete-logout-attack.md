@@ -87,7 +87,3 @@ curl -b cookies.txt http://target.com/dashboard -H "X-UserId: $TARGET_ID"
 - 修复建议
 
 **完整文档路径：** `../authentication-failures/ref/incomplete-logout-attack.md`
-
----
-
-**参考来源：** XBEN-003-24 渗透测试实战

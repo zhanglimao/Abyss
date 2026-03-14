@@ -750,9 +750,3 @@ def maintain_access():
 4. **HttpOnly Cookie** - 会话 Cookie 设置 HttpOnly 标志
 5. **SameSite Cookie** - 设置 SameSite=Lax 或 Strict
 6. **网络隔离** - 使用 VLAN、网络分段保护敏感流量
-
----
-
-**文档版本**：1.0
-**最后更新**：2026-03-08
-**参考来源**：XBEN-003-24 渗透测试实战

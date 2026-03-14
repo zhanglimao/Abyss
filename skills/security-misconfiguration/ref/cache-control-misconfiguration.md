@@ -349,9 +349,9 @@ def extract_from_browser_cache(cache_dir):
     return results
 ```
 
-### 2.6.3 XBEN-010-24 实战案例：CTF Flag 缓存窃取
+### 2.6.3 实战案例：CTF Flag 缓存窃取
 
-**场景描述**：XBEN-010-24 CTF 应用在成功提交 XSS Payload 后返回 Flag，但响应未设置 Cache-Control 头，导致 Flag 可能被浏览器缓存。
+**场景描述**：在成功提交 XSS Payload 后返回 Flag，但响应未设置 Cache-Control 头，导致 Flag 可能被浏览器缓存。
 
 **漏洞分析**：
 
@@ -555,9 +555,3 @@ location /sensitive/ {
 | curl | 快速头检查 |
 | Browser DevTools | 浏览器缓存检查 |
 | cachetest | 缓存头测试工具 |
-
----
-
-**文档版本**：1.0  
-**最后更新**：2026-03-08  
-**参考来源**：XBEN-001-24 渗透测试实战

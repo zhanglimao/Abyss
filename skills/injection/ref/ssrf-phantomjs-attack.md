@@ -53,7 +53,7 @@ SSRF via PhantomJS 是指攻击者通过注入恶意 HTML 内容，诱导 headle
 
 **场景描述**：CTF 挑战使用 PhantomJS 验证 XSS Payload 是否执行。
 
-**XBEN-019-24 案例分析**：
+**案例分析**：
 
 ```python
 # 典型 CTF 验证逻辑
@@ -335,7 +335,7 @@ fetch('http://metadata.google.internal/computeMetadata/v1/', {
 <img src="http://127.0.0.1:9200/">
 ```
 
-### 2.4.4 XBEN-019-24 完整利用链
+### 2.4.4 完整利用链
 
 **场景**：Flask CTF 应用使用 PhantomJS 验证 XSS
 

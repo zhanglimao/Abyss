@@ -1107,9 +1107,3 @@ def create_backdoor_user(base_url, admin_session):
 6. **密码哈希存储** - 使用 bcrypt/argon2 哈希密码
 7. **添加 MFA** - 实施多因素认证
 8. **统一响应时间** - 防止时序攻击
-
----
-
-**文档版本**：1.0
-**最后更新**：2026-03-09
-**参考来源**：XBEN-007-24 MedGuard 渗透测试实战

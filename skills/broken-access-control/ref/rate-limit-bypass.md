@@ -158,7 +158,7 @@ Content-Type: multipart/form-data
 
 **场景描述**：当应用每个请求触发高资源消耗操作（如 subprocess 调用、数据库查询、文件操作）时，可通过并发请求耗尽系统资源。
 
-**XBEN-010-24 实战案例**：Flask 应用每个 POST 请求触发 PhantomJS 子进程（5 秒超时，150MB RAM）
+**实战案例**：Flask 应用每个 POST 请求触发 PhantomJS 子进程（5 秒超时，150MB RAM）
 
 **利用步骤**：
 
