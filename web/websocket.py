@@ -10,8 +10,6 @@ from task import TaskManager, TaskStatus
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.pt import start_pt,stop_pt
 
-_running_tasks: dict[str, bool] = {}
-
 async def run_sync_generator(gen_func, *args):
     """将同步生成器包装成异步生成器，在线程池中执行避免阻塞"""
     iterator = await asyncio.to_thread(lambda: iter(gen_func(*args)))
@@ -30,9 +28,7 @@ def _next_safe(iterator):
     except StopIteration:
         return None
 
-
 async def process_message(websocket, data):
-    global _running_tasks
     # print("weboskcet处理消息:", data)
     """处理单个消息的协程，不阻塞主接收循环"""
     msg_type = data.get("type")
@@ -45,24 +41,21 @@ async def process_message(websocket, data):
     
     task_id = data.get("task_id")
 
-    # print("msg_type:",msg_type)
     # 处理 task_stop 类型的消息，停止正在运行的任务
     if msg_type == "task_stop":
-        # print("stop _running_tasks:",_running_tasks)
-        if task_id in _running_tasks:
-            task = TaskManager.get(task_id)
-            if task:
-                task.set_status(TaskStatus.FAILED)
-            del _running_tasks[task_id]
-            await websocket.send(json.dumps({
-                "type": "task_stopped",
-                "task_id": task_id,
-                "status": "stopped"
-            }, ensure_ascii=False))
-            stop_pt()
-            print(f"Task {task_id} stopped by user request")
-        return
+        task = TaskManager.get(task_id)
+        if task:
+            task.set_status(TaskStatus.FAILED)
 
+        await websocket.send(json.dumps({
+            "type": "task_stopped",
+            "task_id": task_id,
+            "status": "stopped"
+        }, ensure_ascii=False))
+
+        stop_pt()
+        print(f"Task {task_id} stopped by user request")
+        return
     
     if not task_id:
         await websocket.send(json.dumps({
@@ -71,30 +64,16 @@ async def process_message(websocket, data):
         }, ensure_ascii=False))
         return
 
-    task = TaskManager.get_or_create(task_id)
-    task.set_status(TaskStatus.RUNNING)
-
     content = data.get("content")
     # print("content:",content)
     if not content:
         # print("!!!!!空内容消息!!!!!")
         return
 
-    # 记录当前正在运行的任务
-    _running_tasks[task_id] = True
-    # print("add _running_tasks:",_running_tasks)
-    is_stopped = False
-
     try:
         async for msg in run_sync_generator(start_pt, content):
-            # 检查任务是否被停止
-            if task_id not in _running_tasks:
-                is_stopped = True
-                task.set_status(TaskStatus.FAILED)
-                break
             msg['task_id'] = task_id
             ret_msg = json.dumps(msg, ensure_ascii=False)
-            task.add_conversation(ret_msg)
             await websocket.send(ret_msg)
         complate = {
             "status": "complate",
@@ -110,13 +89,6 @@ async def process_message(websocket, data):
         }
         await websocket.send(json.dumps(error_msg, ensure_ascii=False))
         traceback.print_exc()
-    finally:
-        # 清理运行中的任务记录
-        if task_id in _running_tasks:
-            del _running_tasks[task_id]
-        # 只有正常完成才设为 COMPLETED，被停止保持 FAILED
-        if not is_stopped:
-            task.set_status(TaskStatus.COMPLETED)
 
 
 async def handle_message(websocket):
@@ -140,15 +112,6 @@ async def handle_message(websocket):
         print("连接被客户端重置")
     except Exception as e:
         print(f"连接错误：{e}")
-    finally:
-        # 清理断开连接的任务记录
-        if websocket in _running_tasks:
-            task_id = _running_tasks[websocket]
-            del _running_tasks[websocket]
-            task = TaskManager.get(task_id)
-            if task and task.status == TaskStatus.RUNNING:
-                task.set_status(TaskStatus.FAILED)
-            print(f"清理断开连接的任务：{task_id}")
 
 async def start_websocket():
     async with websockets.serve(handle_message, "0.0.0.0", 8765):

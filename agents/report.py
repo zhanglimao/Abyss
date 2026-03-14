@@ -78,17 +78,22 @@ sys_prompt = '''
 4.  **严禁输出**：严禁输出任何超出给定测试数据范围的虚构漏洞。如果没有发现某类漏洞，就写“未发现”或“不适用”。
 '''
 
-# Create a custom agent graph
-custom_graph = create_agent(
-    name="reporter",
-    model=model,
-    tools=[GetCurrentSystemTime],
-    system_prompt=sys_prompt,
-)
 
-# Use it as a custom subagent
-report_agents = CompiledSubAgent(
-    name="reporter",
-    description="负责根据渗透测试专家分析的结果形成最终的渗透测试报告，报告内容需要包含渗透测试的过程、结果、分析等内容，报告的格式为markdown",
-    runnable=custom_graph
-)
+
+def reload_reporter():
+    # Create a custom agent graph
+    custom_graph = create_agent(
+        name="reporter",
+        model=model,
+        tools=[GetCurrentSystemTime],
+        system_prompt=sys_prompt,
+    )
+
+    # Use it as a custom subagent
+    reporter_agents = CompiledSubAgent(
+        name="reporter",
+        description="负责根据渗透测试专家分析的结果形成最终的渗透测试报告，报告内容需要包含渗透测试的过程、结果、分析等内容，报告的格式为markdown",
+        runnable=custom_graph
+    )
+    
+    return reporter_agents

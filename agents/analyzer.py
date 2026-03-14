@@ -42,29 +42,32 @@ sys_prompt = '''
 skill_path = "/skills/"
 fs_root_dir = BASE_DIR
 
-fs_bn = FilesystemBackend(root_dir=fs_root_dir, virtual_mode=True)
+def reload_analyzer():
+    fs_bn = FilesystemBackend(root_dir=fs_root_dir, virtual_mode=True)
 
-todo_mid = TodoListMiddleware()
-fs_mid = FilesystemMiddleware(backend=fs_bn)
-skill_mid = SkillsMiddleware(backend=fs_bn, sources=[skill_path])
-sysmmary_mid = SummarizationMiddleware(model,
-                trigger=('messages', 50),
-                keep=('messages', 1),
-                trim_tokens_to_summarize=100*1024)
-subagent_middleware: list[AgentMiddleware] = [todo_mid,fs_mid,skill_mid,sysmmary_mid]
+    todo_mid = TodoListMiddleware()
+    fs_mid = FilesystemMiddleware(backend=fs_bn)
+    skill_mid = SkillsMiddleware(backend=fs_bn, sources=[skill_path])
+    sysmmary_mid = SummarizationMiddleware(model,
+                    trigger=('messages', 50),
+                    keep=('messages', 1),
+                    trim_tokens_to_summarize=100*1024)
+    subagent_middleware: list[AgentMiddleware] = [todo_mid,fs_mid,skill_mid,sysmmary_mid]
 
-# Create a custom agent graph
-custom_graph = create_agent(
-    name="analyzer",
-    model=model,
-    tools=[GetCurrentSystemTime],
-    system_prompt=sys_prompt,
-    middleware=subagent_middleware,
-)
+    # Create a custom agent graph
+    custom_graph = create_agent(
+        name="analyzer",
+        model=model,
+        tools=[GetCurrentSystemTime],
+        system_prompt=sys_prompt,
+        middleware=subagent_middleware,
+    )
 
-# Use it as a custom subagent
-analyzer_agents = CompiledSubAgent(
-    name="analyzer",
-    description="渗透测试分析者，基于上下文信息、关键信息目录和skill技能库进行逻辑推理和规划，为协调者提供下一步行动的指导建议。",
-    runnable=custom_graph
-)
+    # Use it as a custom subagent
+    analyzer_agents = CompiledSubAgent(
+        name="analyzer",
+        description="渗透测试分析者，基于上下文信息、关键信息目录和skill技能库进行逻辑推理和规划，为协调者提供下一步行动的指导建议。",
+        runnable=custom_graph
+    )
+    
+    return analyzer_agents

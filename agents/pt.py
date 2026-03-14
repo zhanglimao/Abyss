@@ -8,9 +8,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain.messages import HumanMessage
 from langchain_core.messages.base import BaseMessage
 from langgraph.store.memory import InMemoryStore
-from agents.exploiter import exploiter_agents
-from agents.analyzer import analyzer_agents
-from agents.report import report_agents
+from agents.exploiter import reload_exploiter
+from agents.analyzer import reload_analyzer
+from agents.report import reload_reporter
 from agents.tools.tools import GetCurrentSystemTime
 from llm.openai import model
 
@@ -90,6 +90,10 @@ def start_pt(query:str):
     global _stop_pt
     _stop_pt = False  # 重置停止标志
     
+    exploiter_agents = reload_exploiter()
+    analyzer_agents = reload_analyzer()
+    report_agents = reload_reporter()
+    
     pt_test = create_deep_agent(
         name = "PenetrationTestingAgent",
         model = model,
@@ -104,6 +108,8 @@ def start_pt(query:str):
 
     for namespace, chunk in pt_test.stream(query_msg,stream_mode="updates",subgraphs=True):
         if _stop_pt:
+            print("停止渗透测试任务")
+            _stop_pt = False
             break
         # Main agent updates (empty namespace)
         subagent=None

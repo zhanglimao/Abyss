@@ -6,10 +6,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from task import TaskManager, TaskStatus
 from datetime import datetime
 import yaml
-
+import logging
 
 app = Flask(__name__)
 CORS(app)  # 启用 CORS 支持
+
+werkzeug_logger = logging.getLogger('werkzeug')
+werkzeug_logger.setLevel(logging.CRITICAL + 1)
 
 # 加载关键信息文件
 KEY_INFO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'key_information', 'key_infomation.yaml')
