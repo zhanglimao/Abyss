@@ -289,9 +289,76 @@ gobuster dir -u https://target.com -w common.txt --exclude-length 1234
 2. **删除敏感资源** - 移除备份文件、测试页面、示例应用
 3. **禁用目录列表** - 配置 Web 服务器禁用目录浏览
 4. **使用 WAF** - 部署 Web 应用防火墙检测和阻止扫描行为
+5. **实施默认拒绝** - 未明确允许的访问应默认拒绝
+
+## 3.4 CWE-425 直接请求测试
+
+### 3.4.1 测试原理
+
+CWE-425（Direct Request / Forced Browsing）是指 Web 应用程序未能对所有受限的 URL、脚本或文件充分执行适当的授权检查。
+
+**核心问题**：
+- 应用假设资源只能通过给定导航路径访问
+- 仅在路径的某些特定点应用授权检查
+- 攻击者可通过直接请求 URL 绕过这些检查
+
+### 3.4.2 测试方法
+
+**步骤 1：识别受限资源**
+```
+识别以下类型的资源：
+- 管理页面：/admin/*, /manage/*
+- 配置页面：/config/*, /settings/*
+- 用户数据：/users/*, /profiles/*
+- 系统功能：/system/*, /debug/*
+```
+
+**步骤 2：直接访问测试**
+```bash
+# 直接访问管理页面（绕过正常导航）
+curl http://target.com/admin/users
+curl http://target.com/admin/config
+
+# 检查响应
+# 200 OK → 可能存在漏洞
+# 302/401 → 有重定向或认证要求
+# 403 → 有访问控制
+```
+
+**步骤 3：参数篡改测试**
+```bash
+# 修改 URL 路径参数
+GET /app/getappInfo          # 正常用户功能
+GET /app/admin_getappInfo    # 尝试管理员功能
+
+# 修改文件路径参数
+GET /files?name=user.txt
+GET /files?name=../admin.txt
+```
+
+### 3.4.3 CAPEC 攻击模式参考
+
+| CAPEC-ID | 攻击模式 | 说明 |
+|---------|---------|------|
+| CAPEC-127 | Directory Indexing | 目录索引探测 |
+| CAPEC-143 | Detect Unpublicized Web Pages | 探测未公开网页 |
+| CAPEC-144 | Detect Unpublicized Web Services | 探测未公开 Web 服务 |
+| CAPEC-87 | Forceful Browsing | 强制浏览 |
+
+### 3.4.4 已知 CVE 案例
+
+| CVE | 描述 |
+|-----|------|
+| CVE-2022-29238 | 文档协作工具访问控制不当，虽阻止目录列出但无法阻止直接访问 |
+| CVE-2004-2144 | 通过直接请求绕过认证 |
+| CVE-2005-1654 | 通过直接请求绕过授权 |
+| CVE-2005-1668 | 通过直接请求访问特权功能 |
+| CVE-2002-1798 | 通过直接请求上传任意文件 |
 
 ---
 
 **参考资源**：
 - [OWASP Testing Guide - Directory Enumeration](https://owasp.org/www-project-web-security-testing-guide/)
 - [PortSwigger - Forced Browsing](https://portswigger.net/web-security)
+- [CWE-425: Direct Request](https://cwe.mitre.org/data/definitions/425.html)
+- [CAPEC-87: Forceful Browsing](https://capec.mitre.org/data/definitions/87.html)

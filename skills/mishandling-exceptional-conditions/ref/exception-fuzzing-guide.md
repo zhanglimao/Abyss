@@ -461,3 +461,18 @@ if __name__ == "__main__":
 | ffuf | 快速、轻量 | 功能相对简单 | 目录/参数 Fuzzing |
 | AFL | 覆盖率高 | 学习曲线陡 | 二进制文件 |
 | 自定义脚本 | 灵活定制 | 开发成本高 | 特定场景 |
+
+## 3.4 相关 CWE 参考
+
+| CWE 编号 | 名称 | 关联说明 |
+|---------|------|---------|
+| CWE-754 | Improper Check for Unusual or Exceptional Conditions | 不当检查异常或例外条件 |
+| CWE-755 | Improper Handling of Exceptional Conditions | 不当处理异常条件 |
+| CWE-209 | Generation of Error Message Containing Sensitive Information | 生成包含敏感信息的错误消息 |
+| CWE-248 | Uncaught Exception | 未捕获的异常 |
+
+---
+
+**参考资源**：
+- [OWASP Fuzzing](https://cheatsheetseries.owasp.org/cheatsheets/Fuzzing_Cheat_Sheet.html)
+- [OWASP Top 10:2025 A10](https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/)

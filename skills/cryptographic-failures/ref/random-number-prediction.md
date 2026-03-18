@@ -31,15 +31,31 @@
 
 **随机数预测攻击**是针对伪随机数生成器（PRNG）的攻击技术。由于计算机无法生成真正的随机数，只能使用算法生成"伪随机数"，如果 PRNG 实现不当或种子可预测，攻击者可以推算出未来的随机数值。
 
+**CWE 映射：**
+
+| CWE 编号 | 描述 | 风险等级 |
+|---------|------|---------|
+| CWE-330 | 使用不足够随机的值 | 严重 |
+| CWE-331 | 熵不足 | 严重 |
+| CWE-332 | PRNG 熵不足 | 高危 |
+| CWE-335 | PRNG 种子使用不正确 | 高危 |
+| CWE-336 | PRNG 相同种子 | 高危 |
+| CWE-337 | PRNG 可预测种子 | 高危 |
+| CWE-338 | 使用密码学弱 PRNG | 严重 |
+| CWE-340 | 生成可预测的数字或标识符 | 高危 |
+| CWE-1241 | 随机数生成器中使用可预测算法 | 高危 |
+
 **常见 PRNG 弱点：**
 
-| 弱点类型 | 描述 | 风险等级 |
-|---------|------|---------|
-| 弱种子源 | 使用时间戳、PID 等可预测值作为种子 | 严重 |
-| 状态泄露 | PRNG 内部状态被暴露 | 严重 |
-| 算法缺陷 | 使用有缺陷的随机算法（如 rand()） | 高危 |
-| 种子空间小 | 种子熵值不足，可暴力枚举 | 高危 |
-| 并发问题 | 多线程/进程共享 PRNG 状态 | 中危 |
+| 弱点类型 | 描述 | 风险等级 | CWE 映射 |
+|---------|------|---------|---------|
+| 弱种子源 | 使用时间戳、PID 等可预测值作为种子 | 严重 | CWE-335, CWE-337 |
+| 熵不足 | 种子来源熵值不足 | 严重 | CWE-331, CWE-332 |
+| 状态泄露 | PRNG 内部状态被暴露 | 严重 | CWE-330 |
+| 算法缺陷 | 使用有缺陷的随机算法（如 rand()） | 高危 | CWE-338, CWE-1241 |
+| 种子空间小 | 种子熵值不足，可暴力枚举 | 高危 | CWE-334 |
+| 相同种子 | 多个实例使用相同种子 | 高危 | CWE-336 |
+| 并发问题 | 多线程/进程共享 PRNG 状态 | 中危 | CWE-330 |
 
 **常见弱 PRNG 示例：**
 ```python
@@ -428,12 +444,12 @@ import time
 def password_reset_token_attack(target_url, email):
     """
     攻击密码重置流程
-    
+
     1. 请求密码重置
     2. 分析令牌生成模式
     3. 预测有效令牌
     """
-    
+
     # 步骤 1: 收集令牌样本（需要能够访问邮件或响应中包含令牌）
     tokens = []
     for i in range(10):
@@ -441,13 +457,13 @@ def password_reset_token_attack(target_url, email):
         # 假设令牌在响应中或通过其他方式获取
         # 实际场景中可能需要访问邮件系统
         time.sleep(1)
-    
+
     # 步骤 2: 分析令牌模式
     # - 检查长度、字符集、时间相关性
-    
+
     # 步骤 3: 生成预测令牌
     # 基于分析结果生成可能的令牌
-    
+
     print("[*] 密码重置令牌分析完成")
     print("[!] 实际攻击需要结合具体实现细节")
 
@@ -455,6 +471,185 @@ def password_reset_token_attack(target_url, email):
 # 1. MD5(email + timestamp) - 可爆破时间戳
 # 2. base64(email) - 完全可预测
 # 3. random(1000000) - 可爆破
+```
+
+##### 2.4.5 CWE-338 弱 PRNG 利用案例
+
+```python
+#!/usr/bin/env python3
+"""
+CWE-338: 使用密码学弱 PRNG 的利用案例
+"""
+import subprocess
+
+def cwe338_exploit_scenarios():
+    """
+    CWE-338 弱 PRNG 利用场景
+    """
+
+    print("""
+    场景 1: Java Random 用于会话 ID 生成
+
+    漏洞代码:
+    ```java
+    // ❌ 不安全 - 使用 java.util.Random
+    Random random = new Random();
+    String sessionId = Long.toString(random.nextLong());
+    ```
+
+    利用方法:
+    1. 收集多个 Session ID
+    2. 使用 Random 状态恢复工具
+    3. 预测下一个 Session ID
+    4. 劫持用户会话
+
+    工具:
+    - Java Random 预测器
+    - 自定义脚本恢复内部状态
+
+    修复:
+    ```java
+    // ✅ 安全 - 使用 SecureRandom
+    SecureRandom random = new SecureRandom();
+    byte[] token = new byte[32];
+    random.nextBytes(token);
+    String sessionId = bytesToHex(token);
+    ```
+    """)
+
+    print("""
+    场景 2: PHP mt_rand() 用于令牌生成
+
+    漏洞代码:
+    ```php
+    // ❌ 不安全 - mt_rand() 不是加密安全的
+    $token = mt_rand(100000, 999999);
+    ```
+
+    利用方法:
+    1. mt_rand() 使用 Mersenne Twister
+    2. 收集 624 个输出可恢复内部状态
+    3. 预测所有后续输出
+    4. 使用 php_mt_seed 工具爆破种子
+
+    工具:
+    ```bash
+    # 使用 php_mt_seed 爆破种子
+    php_mt_seed 123456
+
+    # 使用 randcrack (Python)
+    pip install randcrack
+    ```
+
+    修复:
+    ```php
+    // ✅ 安全 - 使用 random_bytes()
+    $token = bin2hex(random_bytes(32));
+    ```
+    """)
+
+    print("""
+    场景 3: JavaScript Math.random() 用于令牌
+
+    漏洞代码:
+    ```javascript
+    // ❌ 不安全 - Math.random() 不是加密安全的
+    const token = Math.random().toString(36).substring(2);
+    ```
+
+    利用方法:
+    1. Math.random() 通常使用 XORShift128+
+    2. 收集足够输出可恢复状态
+    3. 预测后续随机数
+    4. 某些浏览器实现可被预测
+
+    修复:
+    ```javascript
+    // ✅ 安全 - 使用 crypto.getRandomValues()
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    const token = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+    ```
+    """)
+
+    print("""
+    场景 4: Python random 用于安全令牌
+
+    漏洞代码:
+    ```python
+    # ❌ 不安全 - random 模块不是加密安全的
+    import random
+    token = str(random.randint(100000, 999999))
+    ```
+
+    利用方法:
+    1. random 模块使用 Mersenne Twister
+    2. 624 个连续输出可完全恢复状态
+    3. 使用 randcrack 工具恢复状态
+    4. 预测所有后续输出
+
+    工具:
+    ```python
+    from randcrack import RandCrack
+
+    rc = RandCrack()
+    for i in range(624):
+        rc.submit(random.getrandbits(32))
+
+    # 现在可以预测
+    print(rc.predict_getrandbits(32))
+    ```
+
+    修复:
+    ```python
+    # ✅ 安全 - 使用 secrets 模块
+    import secrets
+    token = secrets.token_urlsafe(32)
+    ```
+    """)
+
+def cwe338_detection_checklist():
+    """
+    CWE-338 检测检查清单
+    """
+
+    print("""
+    CWE-338 检测检查清单:
+
+    代码审计:
+    [ ] 搜索非加密 PRNG 使用
+        - Python: random, numpy.random
+        - Java: java.util.Random, Math.random()
+        - JavaScript: Math.random()
+        - PHP: rand(), mt_rand()
+        - C/C++: rand(), random()
+        - Ruby: Random, rand()
+        - Go: math/rand
+        - .NET: System.Random
+
+    [ ] 检查 PRNG 使用场景
+        - 会话 ID 生成
+        - 密码重置令牌
+        - CSRF Token
+        - 加密密钥/IV 生成
+        - 验证码生成
+
+    [ ] 检查种子来源
+        - 是否使用时间戳
+        - 是否使用 PID
+        - 是否使用固定值
+        - 熵值是否充足
+
+    动态测试:
+    [ ] 收集随机数样本
+    [ ] 分析随机性质量
+    [ ] 尝试状态恢复
+    [ ] 验证预测准确性
+    """)
+
+# 使用示例
+# cwe338_exploit_scenarios()
+# cwe338_detection_checklist()
 ```
 
 #### 2.5 漏洞利用绕过方法

@@ -228,6 +228,100 @@
 
 ---
 
-**参考资源**：
-- [OWASP Software Supply Chain Security](https://owasp.org/www-project-software-supply-chain-security/)
-- [CWE-494](https://cwe.mitre.org/data/definitions/494.html)
+## 专题二：高级更新劫持技术
+
+### 3.4 构建时更新劫持（SolarWinds 技术）
+
+**攻击原理：**
+```
+┌─────────────────────────────────────────────────────────────┐
+│              构建时更新劫持攻击流程                          │
+├─────────────────────────────────────────────────────────────┤
+│  1. 入侵软件供应商构建系统                                   │
+│     - 获取构建服务器访问权限                                 │
+│     - 潜伏观察构建流程                                       │
+├─────────────────────────────────────────────────────────────┤
+│  2. 修改构建过程                                             │
+│     - 不修改源代码（绕过代码审查）                           │
+│     - 在编译时注入恶意代码                                   │
+│     - 签名在注入后应用，签名仍然有效                         │
+├─────────────────────────────────────────────────────────────┤
+│  3. 分发受污染的更新                                         │
+│     - 通过官方更新渠道分发                                   │
+│     - 用户收到"合法"签名更新                                 │
+│     - 实际包含恶意后门                                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**检测方法：**
+```bash
+# 1. 比对不同构建的产物
+# 如果相同源代码产生不同二进制，可能存在注入
+diff build1/checksums build2/checksums
+
+# 2. 可重现构建验证
+# 使用相同源代码重新构建，比对产物
+docker run --rm -v $(pwd):/src build-image
+diff original_build rebuilt_build
+
+# 3. 监控构建环境
+# 记录构建过程中所有文件访问
+auditctl -w /path/to/build -p wa -k build_monitor
+```
+
+### 3.5 增量更新劫持
+
+**攻击原理：**
+```
+某些更新系统使用增量更新（只下载变更部分）
+
+攻击者可以：
+1. 分析增量更新算法
+2. 构造恶意增量包
+3. 应用于旧版本产生恶意新版本
+```
+
+**利用示例：**
+```python
+# 伪代码：构造恶意增量包
+def create_malicious_patch(old_version, new_version, malicious_code):
+    # 1. 分析正常增量
+    normal_patch = diff(old_version, new_version)
+    
+    # 2. 修改增量包含恶意代码
+    malicious_patch = normal_patch.copy()
+    malicious_patch.add_section('backdoor', malicious_code)
+    
+    # 3. 重新计算校验和（如果算法有缺陷）
+    malicious_patch.checksum = forge_checksum(malicious_patch)
+    
+    return malicious_patch
+```
+
+### 3.6 更新服务器 DNS 劫持
+
+**攻击流程：**
+```
+1. 监控目标网络流量
+2. 识别更新服务器域名
+3. DNS 欺骗/劫持将域名指向恶意服务器
+4. 提供恶意更新包
+5. 如果无签名验证，攻击成功
+```
+
+**检测命令：**
+```bash
+# 检查 DNS 解析是否被劫持
+nslookup update.target.com
+dig update.target.com @8.8.8.8  # 使用公共 DNS 对比
+
+# 检查更新服务器证书
+openssl s_client -connect update.target.com:443 -showcerts
+
+# 监控更新请求
+tcpdump -i any -n port 80 or port 443 | grep update
+```
+
+---
+
+## 参考资源

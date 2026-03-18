@@ -1,0 +1,1 @@
+docker build -t abyss-sandbox:v0.1 .

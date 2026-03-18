@@ -237,8 +237,18 @@ at org.springframework.web.servlet.FrameworkServlet...
 3. **关闭调试模式** - 生产环境禁用调试
 4. **日志记录** - 详细错误记录到日志而非返回给用户
 
+## 3.4 相关 CWE 参考
+
+| CWE 编号 | 名称 | 关联说明 |
+|---------|------|---------|
+| CWE-209 | Generation of Error Message Containing Sensitive Information | 生成包含敏感信息的错误消息 |
+| CWE-215 | Insertion of Sensitive Information Into Debugging Code | 将敏感信息插入调试代码 |
+| CWE-550 | Server-generated Error Message Containing Sensitive Information | 服务器生成的错误消息包含敏感信息 |
+| CWE-756 | Missing Custom Error Page | 缺少自定义错误页面 |
+
 ---
 
 **参考资源**：
 - [OWASP Cheat Sheet: Error Handling](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html)
 - [CWE-209](https://cwe.mitre.org/data/definitions/209.html)
+- [OWASP Top 10:2025 A10](https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/)

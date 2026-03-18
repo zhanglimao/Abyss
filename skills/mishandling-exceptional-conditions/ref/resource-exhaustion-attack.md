@@ -214,8 +214,18 @@ def test_resource_leak():
 4. **监控告警** - 监控资源使用并告警
 5. **自动恢复** - 实现资源自动回收
 
+## 3.4 相关 CWE 参考
+
+| CWE 编号 | 名称 | 关联说明 |
+|---------|------|---------|
+| CWE-400 | Uncontrolled Resource Consumption | 资源消耗失控 |
+| CWE-770 | Allocation of Resources Without Limits | 无速率限制的资源分配 |
+| CWE-460 | Improper Cleanup on Thrown Exception | 抛出异常时清理不当 |
+| CWE-636 | Not Failing Securely ('Failing Open') | 未安全失败 |
+
 ---
 
 **参考资源**：
 - [OWASP Denial of Service](https://cheatsheetseries.owasp.org/cheatsheets/Denial_of_Service_Cheat_Sheet.html)
 - [CWE-400](https://cwe.mitre.org/data/definitions/400.html)
+- [OWASP Top 10:2025 A10](https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/)

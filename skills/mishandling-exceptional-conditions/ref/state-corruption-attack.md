@@ -236,8 +236,18 @@ def attack():
 4. **状态机验证** - 严格验证状态转换
 5. **分布式锁** - 使用锁保证并发安全
 
+## 3.4 相关 CWE 参考
+
+| CWE 编号 | 名称 | 关联说明 |
+|---------|------|---------|
+| CWE-636 | Not Failing Securely ('Failing Open') | 未安全失败 (Failing Open) |
+| CWE-362 | Concurrent Execution using Shared Resource with Improper Synchronization | 并发执行共享资源的同步问题 |
+| CWE-820 | Missing Synchronization | 缺少同步 |
+| CWE-755 | Improper Handling of Exceptional Conditions | 异常条件处理不当 |
+
 ---
 
 **参考资源**：
 - [OWASP Transaction Integrity](https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Integrity_Cheat_Sheet.html)
 - [CWE-636](https://cwe.mitre.org/data/definitions/636.html)
+- [OWASP Top 10:2025 A10](https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/)

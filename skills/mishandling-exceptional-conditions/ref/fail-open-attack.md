@@ -355,3 +355,20 @@ boolean authenticated = breaker.executeSupplier(authSupplier);
 // - 引导用户使用备用认证方式
 // - 记录详细日志供后续分析
 ```
+
+## 3.5 相关 CWE 参考
+
+| CWE 编号 | 名称 | 关联说明 |
+|---------|------|---------|
+| CWE-636 | Not Failing Securely ('Failing Open') | 父类弱点，定义失败开放的核心概念 |
+| CWE-280 | Improper Handling of Insufficient Permissions or Privileges | 权限检查失败时的处理不当 |
+| CWE-755 | Improper Handling of Exceptional Conditions | 异常条件处理不当的通用类别 |
+| CWE-390 | Detection of Error Condition Without Action | 检测到错误但未采取行动 |
+| CWE-391 | Unchecked Error Condition | 未检查的错误条件 |
+
+---
+
+**参考资源：**
+- [CWE-636: Not Failing Securely](https://cwe.mitre.org/data/definitions/636.html)
+- [OWASP Top 10:2025 A10](https://owasp.org/Top10/2025/A10_2025-Mishandling_of_Exceptional_Conditions/)
+- [Saltzer & Schroeder 安全设计原则](https://en.wikipedia.org/wiki/Saltzer_and_Schroeder%27s_design_principles)

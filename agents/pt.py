@@ -149,6 +149,7 @@ def stop_pt():
     print("key_information_path:",key_information_path)
     shutil.rmtree(key_information_path, ignore_errors=True)
     os.makedirs(key_information_path, exist_ok=True)
+    os.chmod(key_information_path, 0o777)
     
     
                             

