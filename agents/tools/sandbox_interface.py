@@ -43,7 +43,7 @@ def execute_remote_command(
         )
         
         # 执行命令
-        stdin, stdout, stderr = ssh_client.exec_command(command)
+        stdin, stdout, stderr = ssh_client.exec_command(command,timeout=300)
         
         # 读取输出
         stdout_output = stdout.read().decode('utf-8', errors='ignore')
@@ -157,7 +157,7 @@ def execute_remote_code(
         
         # 执行代码文件
         exec_full_command = f"cd {working_dir} && {exec_command} {temp_file_path}" if working_dir else f"{exec_command} {temp_file_path}"
-        stdin, stdout, stderr = ssh_client.exec_command(exec_full_command)
+        stdin, stdout, stderr = ssh_client.exec_command(exec_full_command,timeout=300)
         
         # 读取输出
         stdout_output = stdout.read().decode('utf-8', errors='ignore')

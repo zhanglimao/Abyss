@@ -22,7 +22,11 @@ def load_key_information():
     """加载关键信息 YAML 文件"""
     if os.path.exists(KEY_INFO_PATH):
         with open(KEY_INFO_PATH, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f)
+            try:
+                data = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                print(f"Error loading YAML file: {e}")
+                return {}
             # 如果文件为空或只包含空结构，返回空字典
             if data is None:
                 return {}

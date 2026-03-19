@@ -14,7 +14,7 @@ model = ChatOpenAI(
     api_key=api_key,
     base_url=base_url,
     timeout=200,
-    max_tokens=200*1024,
+    max_tokens=65536,
     max_retries=10,
     extra_body = {"enable_thinking":False},
 )
